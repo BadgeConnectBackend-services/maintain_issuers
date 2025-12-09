@@ -10,19 +10,19 @@ import {
 
 const router = express.Router();
 
-// Add new issuer
-router.post("/issuer", createIssuer);
+// Create new issuer
+router.post("/", createIssuer);
 
-//Get all issuers
-router.get("/issuer", getIssuers);
+// Get all issuers
+router.get("/", getIssuers);
 
-// Get, issuer by ID
-router.get("/issuer/:id", getIssuerById);
+// Get issuer by ID
+router.get("/:id", getIssuerById);
 
-// Update issuer details
-router.put("/issuer/:id", updateIssuer);
+// Update issuer
+router.put("/:id", updateIssuer);
 
 // Soft delete issuer
-router.delete("/issuer/:id", deleteIssuer);
+router.delete("/:id", deleteIssuer);
 
 export default router;
