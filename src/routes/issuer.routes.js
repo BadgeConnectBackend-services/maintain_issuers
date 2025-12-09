@@ -1,7 +1,8 @@
+// src/routes/issuer.routes.js
 import express from "express";
 import {
     createIssuer,
-    getAllIssuers,
+    getIssuers,
     getIssuerById,
     updateIssuer,
     deleteIssuer,
@@ -9,19 +10,19 @@ import {
 
 const router = express.Router();
 
-// CREATE
-router.post("/", createIssuer);
+// Add new issuer
+router.post("/issuer", createIssuer);
 
-// READ ALL
-router.get("/", getAllIssuers);
+//Get all issuers
+router.get("/issuer", getIssuers);
 
-// READ ONE
-router.get("/:id", getIssuerById);
+// Get, issuer by ID
+router.get("/issuer/:id", getIssuerById);
 
-// UPDATE (partial allowed)
-router.put("/:id", updateIssuer);
+// Update issuer details
+router.put("/issuer/:id", updateIssuer);
 
-// SOFT DELETE
-router.delete("/:id", deleteIssuer);
+// Soft delete issuer
+router.delete("/issuer/:id", deleteIssuer);
 
 export default router;
