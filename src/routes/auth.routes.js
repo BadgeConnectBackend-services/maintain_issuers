@@ -34,7 +34,7 @@ router.post("/send-otp", async (req, res) => {
         }
 
         const otp = generateOtp();
-        const otpExpiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes validity
+        const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
         admin.otp = otp;
         admin.otpExpiresAt = otpExpiresAt;
@@ -90,7 +90,7 @@ router.post("/verify-otp", async (req, res) => {
                 emailOrMobile: admin.emailOrMobile,
             },
             process.env.JWT_SECRET,
-            { expiresIn: "6h" } // adjustable
+            { expiresIn: "1h" } // adjustable
         );
 
         // Clear OTP after login
