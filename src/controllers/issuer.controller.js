@@ -1,10 +1,16 @@
 // src/controllers/issuer.controller.js
+
 import mongoose from "mongoose";
 import Issuer from "../models/issuer.model.js";
 import { sendSuccess, sendError } from "../utils/apiResponse.js";
 
+/* ------------------------------------------------------------------
+   Helper Normalizers
+   These functions prevent null/undefined errors on nested objects.
+------------------------------------------------------------------ */
+
 function normalizeAdmin(admin = {}) {
-    if (!admin || typeof admin !== "object") admin = {};
+    // Ensure admin object contains safe string fields
     return {
         firstName: admin.firstName || "",
         lastName: admin.lastName || "",
@@ -14,7 +20,6 @@ function normalizeAdmin(admin = {}) {
 }
 
 function normalizePrimaryContact(pc = {}) {
-    if (!pc || typeof pc !== "object") pc = {};
     return {
         firstName: pc.firstName || "",
         lastName: pc.lastName || "",
@@ -23,9 +28,14 @@ function normalizePrimaryContact(pc = {}) {
     };
 }
 
+/**
+ * Normalize issuer document before sending response
+ * Ensures consistent structure for frontend
+ */
 function normalizeIssuerDoc(doc) {
     if (!doc) return null;
-    // Mongoose document or plain object
+
+    // Convert Mongoose document → plain JS object
     const obj = doc.toObject ? doc.toObject() : { ...doc };
 
     return {
@@ -45,6 +55,9 @@ function normalizeIssuerDoc(doc) {
     };
 }
 
+/**
+ * Normalize incoming request body for create/update
+ */
 function normalizeIssuerPayload(body) {
     return {
         orgName: body.orgName,
@@ -59,7 +72,9 @@ function normalizeIssuerPayload(body) {
     };
 }
 
-// POST /issuer
+/* ------------------------------------------------------------------
+   CREATE ISSUER  (POST /issuer)
+------------------------------------------------------------------ */
 export async function createIssuer(req, res) {
     try {
         const payload = normalizeIssuerPayload(req.body);
@@ -68,10 +83,11 @@ export async function createIssuer(req, res) {
         const normalized = normalizeIssuerDoc(issuer);
 
         return sendSuccess(res, normalized, "Issuer created successfully", 201);
+
     } catch (err) {
         console.error("CREATE ISSUER ERROR:", err);
 
-        // duplicate orgEmail, validation, etc.
+        // Duplicate orgEmail case
         if (err.code === 11000 && err.keyPattern?.orgEmail) {
             return sendError(res, "Organization email already exists", 400);
         }
@@ -80,19 +96,29 @@ export async function createIssuer(req, res) {
     }
 }
 
-// GET /issuer  (list non-deleted)
+/* ------------------------------------------------------------------
+   GET ALL ISSUERS (GET /issuer)
+   Returns only non-deleted issuers
+------------------------------------------------------------------ */
 export async function getIssuers(req, res) {
     try {
-        const issuers = await Issuer.find({ isDeleted: false }).sort({ createdAt: -1 }).lean();
+        const issuers = await Issuer.find({ isDeleted: false })
+            .sort({ createdAt: -1 })
+            .lean();
+
         const normalized = issuers.map(normalizeIssuerDoc);
+
         return sendSuccess(res, normalized, "Issuers fetched successfully", 200);
+
     } catch (err) {
         console.error("GET ISSUERS ERROR:", err);
         return sendError(res, "Failed to fetch issuers", 500);
     }
 }
 
-// GET /issuer/:id  (single non-deleted)
+/* ------------------------------------------------------------------
+   GET SINGLE ISSUER (GET /issuer/:id)
+------------------------------------------------------------------ */
 export async function getIssuerById(req, res) {
     try {
         const { id } = req.params;
@@ -109,13 +135,16 @@ export async function getIssuerById(req, res) {
 
         const normalized = normalizeIssuerDoc(issuer);
         return sendSuccess(res, normalized, "Issuer fetched successfully", 200);
+
     } catch (err) {
         console.error("GET ISSUER BY ID ERROR:", err);
         return sendError(res, "Failed to fetch issuer", 500);
     }
 }
 
-// PUT /issuer/:id  (update non-deleted)
+/* ------------------------------------------------------------------
+   UPDATE ISSUER (PUT /issuer/:id)
+------------------------------------------------------------------ */
 export async function updateIssuer(req, res) {
     try {
         const { id } = req.params;
@@ -132,18 +161,25 @@ export async function updateIssuer(req, res) {
 
         const payload = normalizeIssuerPayload(req.body);
 
+        // Merge updates into existing document
         Object.assign(existing, payload);
+
         await existing.save();
 
         const normalized = normalizeIssuerDoc(existing);
+
         return sendSuccess(res, normalized, "Issuer updated successfully", 200);
+
     } catch (err) {
         console.error("UPDATE ISSUER ERROR:", err);
         return sendError(res, err.message || "Failed to update issuer", 500);
     }
 }
 
-// DELETE /issuer/:id  (soft delete)
+/* ------------------------------------------------------------------
+   DELETE ISSUER (DELETE /issuer/:id)
+   Soft delete: isDeleted = true
+------------------------------------------------------------------ */
 export async function deleteIssuer(req, res) {
     try {
         const { id } = req.params;
@@ -159,14 +195,15 @@ export async function deleteIssuer(req, res) {
         }
 
         if (issuer.isDeleted) {
-            // Option A: treat as already deleted (can be either success or error)
             return sendError(res, "Issuer already deleted", 400);
         }
 
         issuer.isDeleted = true;
         await issuer.save();
 
-        return sendSuccess(res, null, "Issuer deleted successfully", 200);
+        // Better to return deleted ID so frontend can remove row immediately
+        return sendSuccess(res, { id }, "Issuer deleted successfully", 200);
+
     } catch (err) {
         console.error("DELETE ISSUER ERROR:", err);
         return sendError(res, "Failed to delete issuer", 500);
