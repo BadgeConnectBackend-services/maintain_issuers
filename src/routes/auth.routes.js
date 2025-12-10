@@ -1,33 +1,45 @@
 // src/routes/auth.routes.js
-
 import express from "express";
-import Admin from "../models/admin.model.js";
 import jwt from "jsonwebtoken";
+import Admin from "../models/admin.model.js";
 import { sendSuccess, sendError } from "../utils/apiResponse.js";
 
 const router = express.Router();
 
-// -------------------------------------------------------
-// Helper: Generate 6-digit OTP
-// -------------------------------------------------------
+// Helper: generate 6-digit OTP
 function generateOtp() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// -------------------------------------------------------
-// POST /auth/send-otp
-// Step 1: Admin enters email/mobile → backend generates OTP
-// -------------------------------------------------------
+// Helper: find admin by identifier (email OR mobile)
+async function findAdminByIdentifier(identifier) {
+    const value = (identifier || "").trim();
+    if (!value) return null;
+
+    const isEmail = value.includes("@");
+
+    const query = {
+        isActive: true,
+        ...(isEmail ? { email: value } : { mobile: value }),
+    };
+
+    return Admin.findOne(query);
+}
+
+// =======================================================
+//  POST /auth/send-otp
+//  Step 1: Admin enters email or mobile → send OTP
+// =======================================================
 router.post("/send-otp", async (req, res) => {
     try {
         const { emailOrMobile } = req.body;
+        const identifier = (emailOrMobile || "").trim();
 
-        if (!emailOrMobile) {
+        if (!identifier) {
             return sendError(res, "Email or mobile is required", 400);
         }
 
-        // Admin must already exist (NO auto-create)
-        const admin = await Admin.findOne({ emailOrMobile });
+        const admin = await findAdminByIdentifier(identifier);
 
         if (!admin) {
             return sendError(res, "Admin not registered", 404);
@@ -40,79 +52,87 @@ router.post("/send-otp", async (req, res) => {
         admin.otpExpiresAt = otpExpiresAt;
         await admin.save();
 
+        // For now we return OTP in response (dev mode)
         return sendSuccess(
             res,
-            {
-                otp, // visible only in dev mode — remove in production
-            },
+            { otp },
             "OTP generated successfully",
             200
         );
-
     } catch (err) {
         console.error("SEND OTP ERROR:", err);
         return sendError(res, "Server error while generating OTP", 500);
     }
 });
 
-// -------------------------------------------------------
-// POST /auth/verify-otp
-// Step 2: Validate OTP → create JWT token
-// -------------------------------------------------------
+// =======================================================
+//  POST /auth/verify-otp
+//  Step 2: Admin enters OTP → validate → return JWT
+// =======================================================
 router.post("/verify-otp", async (req, res) => {
     try {
         const { emailOrMobile, otp } = req.body;
 
-        if (!emailOrMobile || !otp) {
-            return sendError(res, "Email/mobile and OTP are required", 400);
+        const identifier = (emailOrMobile || "").trim();
+        const submittedOtp = (otp || "").trim();
+
+        if (!identifier || !submittedOtp) {
+            return sendError(
+                res,
+                "Email/mobile and OTP are required",
+                400
+            );
         }
 
-        const admin = await Admin.findOne({ emailOrMobile });
+        const admin = await findAdminByIdentifier(identifier);
 
         if (!admin) {
             return sendError(res, "Admin not registered", 404);
         }
 
-        // 1️⃣ Check OTP expiry FIRST
+        // Check OTP match
+        if (!admin.otp || admin.otp !== submittedOtp) {
+            return sendError(res, "Invalid OTP", 400);
+        }
+
+        // Check expiry
         if (!admin.otpExpiresAt || admin.otpExpiresAt < new Date()) {
             return sendError(res, "OTP expired", 400);
         }
 
-        // 2️⃣ Then check OTP value
-        if (admin.otp !== otp) {
-            return sendError(res, "Invalid OTP", 400);
+        // OTP is valid → generate JWT
+        if (!process.env.JWT_SECRET) {
+            console.error("JWT_SECRET missing in environment");
+            return sendError(res, "Server configuration error", 500);
         }
 
-        // OTP is valid → generate JWT token
         const token = jwt.sign(
             {
                 adminId: admin._id,
-                emailOrMobile: admin.emailOrMobile,
+                email: admin.email || null,
+                mobile: admin.mobile || null,
             },
             process.env.JWT_SECRET,
-            { expiresIn: "1h" } // adjustable
+            { expiresIn: "1h" } // as per your choice
         );
 
-        // Clear OTP after login
+        // Clear OTP after successful login
         admin.otp = null;
         admin.otpExpiresAt = null;
         await admin.save();
 
-        return sendSuccess(
-            res,
-            {
-                token,
-                admin: {
-                    id: admin._id,
-                    emailOrMobile: admin.emailOrMobile,
-                    firstName: admin.firstName || "",
-                    lastName: admin.lastName || "",
-                },
+        const responseData = {
+            token,
+            admin: {
+                id: admin._id,
+                firstName: admin.firstName,
+                lastName: admin.lastName,
+                email: admin.email || null,
+                mobile: admin.mobile || null,
             },
-            "Login successful",
-            200
-        );
+        };
 
+        return sendSuccess(res, responseData, "Login successful", 200);
     } catch (err) {
         console.error("VERIFY OTP ERROR:", err);
         return sendError(res, "Server error while verifying OTP", 500);

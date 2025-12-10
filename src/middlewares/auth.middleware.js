@@ -1,10 +1,11 @@
+// src/middlewares/auth.middleware.js
 import jwt from "jsonwebtoken";
 
 export default function authMiddleware(req, res, next) {
     try {
         const authHeader = req.headers.authorization;
 
-        if (!authHeader || !authHeader.startsWith("Bearer")) {
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return res.status(401).json({
                 success: false,
                 message: "Unauthorized: No token provided",
@@ -13,16 +14,15 @@ export default function authMiddleware(req, res, next) {
 
         const token = authHeader.split(" ")[1];
 
-        // Validate token
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        // Attach admin data to request
         req.admin = {
             id: decoded.adminId,
-            emailOrMobile: decoded.emailOrMobile,
+            email: decoded.email || null,
+            mobile: decoded.mobile || null,
         };
 
-        next(); // continue to controller
+        next();
     } catch (err) {
         console.error("JWT ERROR:", err);
 
