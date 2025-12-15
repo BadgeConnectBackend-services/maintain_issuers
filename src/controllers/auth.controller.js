@@ -1,113 +1,202 @@
 // src/controllers/auth.controller.js
 
+import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import Admin from "../models/admin.model.js";
 import { sendSuccess, sendError } from "../utils/apiResponse.js";
-import jwt from "jsonwebtoken";
 
 /**
- * Utility: Generate a 6-digit OTP
+ * Helpers (UNCHANGED LOGIC)
  */
-function generateOtp() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+function generateAccessToken(admin) {
+    return jwt.sign(
+        {
+            adminId: admin._id,
+            email: admin.email || null,
+            mobile: admin.mobile || null,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "1h" }
+    );
 }
 
-/**
- * POST /auth/send-otp
- * Step 1 — Admin enters emailOrMobile → backend checks admin exists → generates OTP → saves → returns message + OTP (temporarily)
- */
-export async function sendOtp(req, res) {
-    try {
-        const { emailOrMobile } = req.body;
+function generateRefreshToken() {
+    return crypto.randomBytes(32).toString("hex");
+}
 
-        if (!emailOrMobile) {
-            return sendError(res, "Email or mobile is required", 400);
+const REFRESH_TOKEN_LIFETIME_MS = 2 * 24 * 60 * 60 * 1000;
+
+/**
+ * POST /auth/admin-exists
+ * Public endpoint — used BEFORE OTP generation
+ */
+export async function adminExistsController(req, res) {
+    try {
+        const { identifier } = req.body;
+
+        if (!identifier) {
+            return sendError(res, "Invalid request", 400);
         }
 
-        // 1️⃣ Check admin exists
-        const admin = await Admin.findOne({ emailOrMobile });
+        const admin = await Admin.findOne({
+            $or: [{ email: identifier }, { mobile: identifier }],
+            isActive: true,
+        }).select("_id");
 
         if (!admin) {
-            // Admin must be manually created by super admin (your rule)
-            return sendError(res, "Admin not found", 404);
+            return sendError(res, "Admin does not exist", 404);
         }
 
-        // 2️⃣ Generate OTP
-        const otp = generateOtp();
-        const expiry = new Date(Date.now() + 5 * 60 * 1000); // valid for 5 minutes
-
-        // 3️⃣ Store OTP in DB
-        admin.otp = otp;
-        admin.otpExpiresAt = expiry;
-        await admin.save();
-
-        // 4️⃣ Return OTP (TEMPORARY only for debug)
         return sendSuccess(
             res,
-            { otp }, // remove in production
-            "OTP generated successfully",
+            { exists: true },
+            "Admin exists",
             200
         );
     } catch (err) {
-        console.error("SEND OTP ERROR:", err);
-        return sendError(res, "Failed to send OTP", 500);
+        console.error("ADMIN EXISTS ERROR:", err);
+        return sendError(res, "Server error", 500);
     }
 }
 
 /**
- * POST /auth/verify-otp
- * Step 2 — Admin enters OTP → backend verifies → generates JWT → clears OTP
+ * POST /auth/login-with-otp
+ * OTP already verified by OTP_service
  */
-export async function verifyOtp(req, res) {
+export async function loginWithOtpController(req, res) {
     try {
-        const { emailOrMobile, otp } = req.body;
+        const { verificationId } = req.body;
 
-        if (!emailOrMobile || !otp) {
-            return sendError(res, "Email/Mobile and OTP are required", 400);
+        if (!verificationId) {
+            return sendError(res, "Invalid request", 400);
         }
 
-        // 1️⃣ Find admin
-        const admin = await Admin.findOne({ emailOrMobile });
-
-        if (!admin) {
-            return sendError(res, "Admin not found", 404);
-        }
-
-        // 2️⃣ Check OTP exists
-        if (!admin.otp || !admin.otpExpiresAt) {
-            return sendError(res, "OTP not generated. Please request again.", 400);
-        }
-
-        // 3️⃣ Check expiry
-        if (admin.otpExpiresAt < new Date()) {
-            return sendError(res, "OTP expired. Request a new one.", 400);
-        }
-
-        // 4️⃣ Check OTP match
-        if (admin.otp !== otp) {
-            return sendError(res, "Invalid OTP", 400);
-        }
-
-        // 5️⃣ Generate JWT token
-        const token = jwt.sign(
+        // 🔒 Call OTP_service internally
+        const response = await fetch(
+            `${process.env.OTP_SERVICE_BASE_URL}/otp/verification/${verificationId}`,
             {
-                id: admin._id,
-                emailOrMobile: admin.emailOrMobile,
-                firstName: admin.firstName,
-                lastName: admin.lastName,
-            },
-            process.env.JWT_SECRET,
-            { expiresIn: "1d" }
+                headers: {
+                    "x-internal-api-key": process.env.OTP_SERVICE_INTERNAL_KEY,
+                },
+            }
         );
 
-        // 6️⃣ Clear OTP
-        admin.otp = null;
-        admin.otpExpiresAt = null;
+        if (!response.ok) {
+            return sendError(res, "OTP verification failed", 401);
+        }
+
+        const { data } = await response.json();
+        const { identifier, purpose } = data;
+
+        // 🔐 Enforce correct purpose
+        if (purpose !== "admin_login") {
+            return sendError(res, "Unauthorized", 403);
+        }
+
+        // 🔍 Find admin
+        const admin = await Admin.findOne({
+            $or: [{ email: identifier }, { mobile: identifier }],
+            isActive: true,
+        });
+
+        if (!admin) {
+            return sendError(res, "Admin not registered", 403);
+        }
+
+        // ✅ Issue tokens (UNCHANGED logic)
+        const accessToken = generateAccessToken(admin);
+        const refreshToken = generateRefreshToken();
+
+        admin.refreshToken = refreshToken;
+        admin.refreshTokenExpiresAt = new Date(
+            Date.now() + REFRESH_TOKEN_LIFETIME_MS
+        );
         await admin.save();
 
-        // 7️⃣ Return success + token + admin details
-        return sendSuccess(res, { token, admin }, "OTP verified successfully", 200);
+        return sendSuccess(
+            res,
+            {
+                accessToken,
+                refreshToken,
+                admin: {
+                    id: admin._id,
+                    firstName: admin.firstName,
+                    lastName: admin.lastName,
+                    email: admin.email,
+                    mobile: admin.mobile,
+                },
+            },
+            "Login successful",
+            200
+        );
     } catch (err) {
-        console.error("VERIFY OTP ERROR:", err);
-        return sendError(res, "Failed to verify OTP", 500);
+        console.error("LOGIN WITH OTP ERROR:", err);
+        return sendError(res, "Login failed", 500);
+    }
+}
+
+/**
+ * POST /auth/refresh-token (UNCHANGED)
+ */
+export async function refreshTokenController(req, res) {
+    try {
+        const { refreshToken } = req.body;
+
+        if (!refreshToken) {
+            return sendError(res, "Refresh token is required", 400);
+        }
+
+        const admin = await Admin.findOne({ refreshToken, isActive: true });
+
+        if (
+            !admin ||
+            !admin.refreshTokenExpiresAt ||
+            admin.refreshTokenExpiresAt < new Date()
+        ) {
+            return sendError(res, "Invalid refresh token", 401);
+        }
+
+        const newAccessToken = generateAccessToken(admin);
+        const newRefreshToken = generateRefreshToken();
+
+        admin.refreshToken = newRefreshToken;
+        admin.refreshTokenExpiresAt = new Date(
+            Date.now() + REFRESH_TOKEN_LIFETIME_MS
+        );
+        await admin.save();
+
+        return sendSuccess(
+            res,
+            {
+                accessToken: newAccessToken,
+                refreshToken: newRefreshToken,
+            },
+            "Token refreshed",
+            200
+        );
+    } catch (err) {
+        console.error("REFRESH TOKEN ERROR:", err);
+        return sendError(res, "Server error", 500);
+    }
+}
+
+/**
+ * POST /auth/logout (UNCHANGED)
+ */
+export async function logoutController(req, res) {
+    try {
+        const { refreshToken } = req.body;
+
+        if (refreshToken) {
+            await Admin.updateOne(
+                { refreshToken },
+                { refreshToken: null, refreshTokenExpiresAt: null }
+            );
+        }
+
+        return sendSuccess(res, null, "Logged out successfully", 200);
+    } catch (err) {
+        console.error("LOGOUT ERROR:", err);
+        return sendError(res, "Server error", 500);
     }
 }
