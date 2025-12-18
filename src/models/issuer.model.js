@@ -32,6 +32,11 @@ const issuerSchema = new mongoose.Schema(
         admin2: adminDetailsSchema,
         admin3: adminDetailsSchema,
 
+        apiAuthKey: {
+            type: String,
+            select: false, // 🔐 hidden by default
+        },
+
         isDeleted: { type: Boolean, default: false },
 
         createdAt: { type: Date, default: Date.now },
