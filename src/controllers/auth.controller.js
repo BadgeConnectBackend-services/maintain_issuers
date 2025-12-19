@@ -30,27 +30,32 @@ const REFRESH_TOKEN_LIFETIME_MS = 2 * 24 * 60 * 60 * 1000;
  * POST /auth/admin-exists
  * Public endpoint — used BEFORE OTP generation
  */
+/**
+ * POST /auth/admin-exists
+ * Public endpoint — used BEFORE OTP generation
+ */
 export async function adminExistsController(req, res) {
     try {
         const { identifier } = req.body;
 
         if (!identifier) {
-            return sendError(res, "Invalid request", 400);
+            return sendError(res, "Identifier is required", 400);
         }
+
+        const normalized = String(identifier).trim().toLowerCase();
 
         const admin = await Admin.findOne({
-            $or: [{ email: identifier }, { mobile: identifier }],
-            isActive: true,
+            isActive: true, // ✅ FIXED
+            $or: [
+                { email: normalized },
+                { mobile: normalized }
+            ],
         }).select("_id");
-
-        if (!admin) {
-            return sendError(res, "Admin does not exist", 404);
-        }
 
         return sendSuccess(
             res,
-            { exists: true },
-            "Admin exists",
+            { exists: !!admin },
+            "Admin existence checked",
             200
         );
     } catch (err) {
@@ -59,51 +64,33 @@ export async function adminExistsController(req, res) {
     }
 }
 
+
 /**
- * POST /auth/login-with-otp
- * OTP already verified by OTP_service
+ * POST /auth/login
+ * OTP already verified by otp_service (frontend responsibility)
  */
-export async function loginWithOtpController(req, res) {
+export async function loginController(req, res) {
     try {
-        const { verificationId } = req.body;
+        const { identifier } = req.body;
 
-        if (!verificationId) {
-            return sendError(res, "Invalid request", 400);
+        if (!identifier) {
+            return sendError(res, "Identifier is required", 400);
         }
 
-        // 🔒 Call OTP_service internally
-        const response = await fetch(
-            `${process.env.OTP_SERVICE_BASE_URL}/otp/verification/${verificationId}`,
-            {
-                headers: {
-                    "x-internal-api-key": process.env.OTP_SERVICE_INTERNAL_KEY,
-                },
-            }
-        );
+        const normalized = identifier.trim().toLowerCase();
 
-        if (!response.ok) {
-            return sendError(res, "OTP verification failed", 401);
-        }
-
-        const { data } = await response.json();
-        const { identifier, purpose } = data;
-
-        // 🔐 Enforce correct purpose
-        if (purpose !== "admin_login") {
-            return sendError(res, "Unauthorized", 403);
-        }
-
-        // 🔍 Find admin
         const admin = await Admin.findOne({
-            $or: [{ email: identifier }, { mobile: identifier }],
             isActive: true,
+            $or: [
+                { email: normalized },
+                { mobile: normalized }
+            ],
         });
 
         if (!admin) {
             return sendError(res, "Admin not registered", 403);
         }
 
-        // ✅ Issue tokens (UNCHANGED logic)
         const accessToken = generateAccessToken(admin);
         const refreshToken = generateRefreshToken();
 
@@ -111,6 +98,7 @@ export async function loginWithOtpController(req, res) {
         admin.refreshTokenExpiresAt = new Date(
             Date.now() + REFRESH_TOKEN_LIFETIME_MS
         );
+
         await admin.save();
 
         return sendSuccess(
@@ -130,7 +118,7 @@ export async function loginWithOtpController(req, res) {
             200
         );
     } catch (err) {
-        console.error("LOGIN WITH OTP ERROR:", err);
+        console.error("LOGIN ERROR:", err);
         return sendError(res, "Login failed", 500);
     }
 }
