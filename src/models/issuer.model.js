@@ -27,15 +27,18 @@ const issuerSchema = new mongoose.Schema(
         primaryContact: primaryContactSchema,
 
         supportEmail: { type: String, required: true },
+        apiAuthKey: {
+            type: String,
+            default: "",      // 👈 THIS IS THE KEY
+            select: false,    // keep it hidden
+        },
+
 
         admin1: adminDetailsSchema,
         admin2: adminDetailsSchema,
         admin3: adminDetailsSchema,
 
-        apiAuthKey: {
-            type: String,
-            select: false, // 🔐 hidden by default
-        },
+
 
         isDeleted: { type: Boolean, default: false },
 
