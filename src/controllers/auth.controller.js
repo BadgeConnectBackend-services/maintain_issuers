@@ -11,7 +11,7 @@ import { sendSuccess, sendError } from "../utils/apiResponse.js";
 function generateAccessToken(admin) {
     return jwt.sign(
         {
-            adminId: admin._id,
+            adminId: admin.adminId, // UUID
             email: admin.email || null,
             mobile: admin.mobile || null,
         },
@@ -19,6 +19,7 @@ function generateAccessToken(admin) {
         { expiresIn: "1h" }
     );
 }
+
 
 function generateRefreshToken() {
     return crypto.randomBytes(32).toString("hex");

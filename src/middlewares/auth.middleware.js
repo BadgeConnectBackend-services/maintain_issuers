@@ -17,10 +17,11 @@ export default function authMiddleware(req, res, next) {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
         req.admin = {
-            id: decoded.adminId,
+            adminId: decoded.adminId,
             email: decoded.email || null,
             mobile: decoded.mobile || null,
         };
+
 
         next();
     } catch (err) {
