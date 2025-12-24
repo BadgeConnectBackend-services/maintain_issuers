@@ -5,7 +5,6 @@ import { sendSuccess, sendError } from "../utils/apiResponse.js";
 
 /* ------------------------------------------------------------------
    Helper Normalizers
-   These prevent null/undefined issues and stabilize API responses
 ------------------------------------------------------------------ */
 
 function normalizeAdmin(admin = {}) {
@@ -26,19 +25,13 @@ function normalizePrimaryContact(pc = {}) {
     };
 }
 
-/**
- * Normalize issuer document before sending response
- * IMPORTANT:
- * - Exposes issuerId (UUID)
- * - Never exposes Mongo _id
- */
 function normalizeIssuerDoc(doc) {
     if (!doc) return null;
 
     const obj = doc.toObject ? doc.toObject() : { ...doc };
 
     return {
-        issuerId: obj.issuerId, // ✅ UUID (public identifier)
+        issuerId: obj.issuerId,
 
         orgName: obj.orgName || "",
         postal: obj.postal || "",
@@ -52,17 +45,16 @@ function normalizeIssuerDoc(doc) {
         admin2: normalizeAdmin(obj.admin2),
         admin3: normalizeAdmin(obj.admin3),
 
+        // ✅ AUDIT INFO (read-only for frontend)
+        addedByAdmin: obj.addedByAdmin,
+        lastUpdatedBy: obj.lastUpdatedBy,
+
         isDeleted: !!obj.isDeleted,
         createdAt: obj.createdAt,
         updatedAt: obj.updatedAt,
     };
 }
 
-/**
- * Normalize incoming request body for create/update
- * NOTE:
- * - issuerId is NEVER accepted from client
- */
 function normalizeIssuerPayload(body) {
     return {
         orgName: body.orgName,
@@ -80,13 +72,23 @@ function normalizeIssuerPayload(body) {
 }
 
 /* ------------------------------------------------------------------
-   CREATE ISSUER  (POST /issuer)
+   CREATE ISSUER
 ------------------------------------------------------------------ */
 export async function createIssuer(req, res) {
     try {
+        const adminEmail = req.admin?.email;
+
+        if (!adminEmail) {
+            return sendError(res, "Unauthorized admin", 401);
+        }
+
         const payload = normalizeIssuerPayload(req.body);
 
-        const issuer = await Issuer.create(payload);
+        const issuer = await Issuer.create({
+            ...payload,
+            addedByAdmin: adminEmail,
+            lastUpdatedBy: null,
+        });
 
         return sendSuccess(
             res,
@@ -106,7 +108,7 @@ export async function createIssuer(req, res) {
 }
 
 /* ------------------------------------------------------------------
-   GET ALL ISSUERS (GET /issuer)
+   GET ALL ISSUERS
 ------------------------------------------------------------------ */
 export async function getIssuers(req, res) {
     try {
@@ -124,8 +126,7 @@ export async function getIssuers(req, res) {
 }
 
 /* ------------------------------------------------------------------
-   GET SINGLE ISSUER (GET /issuer/:id)
-   :id === issuerId (UUID)
+   GET SINGLE ISSUER
 ------------------------------------------------------------------ */
 export async function getIssuerById(req, res) {
     try {
@@ -157,11 +158,16 @@ export async function getIssuerById(req, res) {
 }
 
 /* ------------------------------------------------------------------
-   UPDATE ISSUER (PUT /issuer/:id)
-   :id === issuerId (UUID)
+   UPDATE ISSUER
 ------------------------------------------------------------------ */
 export async function updateIssuer(req, res) {
     try {
+        const adminEmail = req.admin?.email;
+
+        if (!adminEmail) {
+            return sendError(res, "Unauthorized admin", 401);
+        }
+
         const { id } = req.params;
 
         const existing = await Issuer.findOne({
@@ -176,6 +182,8 @@ export async function updateIssuer(req, res) {
         const payload = normalizeIssuerPayload(req.body);
 
         Object.assign(existing, payload);
+        existing.lastUpdatedBy = adminEmail;
+
         await existing.save();
 
         return sendSuccess(
@@ -191,8 +199,7 @@ export async function updateIssuer(req, res) {
 }
 
 /* ------------------------------------------------------------------
-   DELETE ISSUER (DELETE /issuer/:id)
-   Soft delete using issuerId (UUID)
+   DELETE ISSUER
 ------------------------------------------------------------------ */
 export async function deleteIssuer(req, res) {
     try {

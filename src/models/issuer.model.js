@@ -32,7 +32,7 @@ const issuerSchema = new mongoose.Schema(
             unique: true,
             index: true,
             default: uuidv4,
-            immutable: true, // 🚫 never allow updates
+            immutable: true,
         },
 
         orgName: { type: String, required: true },
@@ -59,12 +59,28 @@ const issuerSchema = new mongoose.Schema(
         apiAuthKey: {
             type: String,
             default: "",
-            select: false, // 🔒 hidden from queries by default
+            select: false,
         },
 
         admin1: adminDetailsSchema,
         admin2: adminDetailsSchema,
         admin3: adminDetailsSchema,
+
+        // ✅ AUDIT FIELDS
+        addedByAdmin: {
+            type: String,
+            required: true,
+            lowercase: true,
+            trim: true,
+            immutable: true, // 🔒 cannot be changed after creation
+        },
+
+        lastUpdatedBy: {
+            type: String,
+            default: null,
+            lowercase: true,
+            trim: true,
+        },
 
         isDeleted: { type: Boolean, default: false },
     },
