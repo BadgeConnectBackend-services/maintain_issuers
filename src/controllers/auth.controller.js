@@ -6,7 +6,7 @@ import Admin from "../models/admin.model.js";
 import { sendSuccess, sendError } from "../utils/apiResponse.js";
 
 /**
- * Generate JWT access token (1 MIN for testing)
+ * Generate JWT access token 
  */
 function generateAccessToken(admin) {
     const token = jwt.sign(
@@ -16,14 +16,10 @@ function generateAccessToken(admin) {
             mobile: admin.mobile || null,
         },
         process.env.JWT_SECRET,
-        { expiresIn: "30m" } // 🔥 1 MIN
+        { expiresIn: "30m" }
     );
 
     const decoded = jwt.decode(token);
-
-    // console.log("🟢 ACCESS TOKEN GENERATED");
-    // console.log("   Token:", token);
-    // console.log("   Expires At:", new Date(decoded.exp * 1000).toISOString());
 
     return token;
 }
@@ -82,9 +78,6 @@ export async function loginController(req, res) {
         );
         await admin.save();
 
-        // console.log("🔵 LOGIN SUCCESS");
-        // console.log("   Refresh Token:", refreshToken);
-
         return sendSuccess(res, {
             accessToken,
             refreshToken,
@@ -110,9 +103,6 @@ export async function refreshTokenController(req, res) {
         const { refreshToken } = req.body;
         if (!refreshToken) return sendError(res, "Refresh token required", 400);
 
-        // console.log("🟠 REFRESH TOKEN REQUEST");
-        // console.log("   Incoming Refresh Token:", refreshToken);
-
         const admin = await Admin.findOne({ refreshToken, isActive: true });
 
         if (
@@ -132,9 +122,6 @@ export async function refreshTokenController(req, res) {
             Date.now() + REFRESH_TOKEN_LIFETIME_MS
         );
         await admin.save();
-
-        // console.log("🟢 TOKEN REFRESHED");
-        // console.log("   New Refresh Token:", newRefreshToken);
 
         return sendSuccess(res, {
             accessToken: newAccessToken,
