@@ -4,24 +4,35 @@ import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 
 const adminDetailsSchema = new mongoose.Schema(
-    {
-        firstName: String,
-        lastName: String,
-        email: String,
-        orgDept: String,
+  {
+    firstName: String,
+    lastName: String,
+    email: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      default: "",
     },
-    { _id: false }
+    orgDept: String,
+  },
+  { _id: false }
 );
 
 const primaryContactSchema = new mongoose.Schema(
-    {
-        firstName: String,
-        lastName: String,
-        email: String,
-        phone: String,
+  {
+    firstName: String,
+    lastName: String,
+    email: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      required: true,
     },
-    { _id: false }
+    phone: String,
+  },
+  { _id: false }
 );
+
 
 const issuerSchema = new mongoose.Schema(
     {
