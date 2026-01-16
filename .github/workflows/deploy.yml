@@ -1,0 +1,81 @@
+name: Maintain Issuers Release Deploy
+
+on:
+  push:
+    tags:
+      - "issuer-v*"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------
+      # Checkout source
+      # -------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # Setup Node
+      # -------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      # -------------------------
+      # Install deps
+      # -------------------------
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      # -------------------------
+      # Docker Hub login
+      # -------------------------
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # -------------------------
+      # Build & Push Docker image
+      # -------------------------
+      - name: Build and push Docker image
+        run: |
+          IMAGE_TAG=${{ github.ref_name }}
+
+          docker build \
+            -t rajsondhiya/maintain_issuers:$IMAGE_TAG .
+
+          docker push rajsondhiya/maintain_issuers:$IMAGE_TAG
+
+      # -------------------------
+      # Deploy on EC2
+      # -------------------------
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            IMAGE_TAG=${{ github.ref_name }}
+
+            docker pull rajsondhiya/maintain_issuers:$IMAGE_TAG
+
+            docker stop maintain_issuers || true
+            docker rm maintain_issuers || true
+
+            docker run -d \
+              --name maintain_issuers \
+              --env-file ~/services/maintain_issuers/.env \
+              -p 5000:5000 \
+              --restart unless-stopped \
+              rajsondhiya/maintain_issuers:$IMAGE_TAG
+
+            docker image prune -f
