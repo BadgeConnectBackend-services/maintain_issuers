@@ -73,7 +73,7 @@ jobs:
 
             docker run -d \
               --name maintain_issuers \
-              --env-file ~/services/maintain_issuers/.env \
+              --env-file ~/services/backend/maintain_issuers/.env \
               -p 5000:5000 \
               --restart unless-stopped \
               rajsondhiya/maintain_issuers:$IMAGE_TAG
