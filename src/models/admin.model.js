@@ -1,6 +1,7 @@
 // src/models/admin.model.js
 import mongoose from "mongoose";
 
+// admin schema for mongodb
 const adminSchema = new mongoose.Schema(
     {
         firstName: { type: String, required: true },
