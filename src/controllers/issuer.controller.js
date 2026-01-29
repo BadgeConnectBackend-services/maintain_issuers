@@ -120,9 +120,10 @@ async function sendWelcomeIssuerEmailsIndividually({ issuer, adminEmail }) {
       console.log(`📨 Sending welcome email to ${user.role}: ${user.email}`);
 
       const payload = {
-        from: adminEmail, // 👈 ADMIN sender
-        to: user.email, // 👈 USER's OWN EMAIL
-        subject: "Welcome to BadgeConnect 🎉",
+        from: process.env.EMAIL_SENDER_SES, // "BadgeConnect <no-reply@badgeconnect.cloudstry.com>"
+        to: user.email, // user's real inbox
+        subject:
+          "Issuer Onboarding Confirmation – BadgeConnect Digital Credential Platform",
         template: "welcome-issuer",
         variables: {
           recipientName: user.name || "User",
@@ -130,10 +131,10 @@ async function sendWelcomeIssuerEmailsIndividually({ issuer, adminEmail }) {
           orgName: issuer.orgName,
           orgEmail: issuer.orgEmail,
           supportEmail: issuer.supportEmail,
-          // ✅ IMPORTANT FIX
-          personEmail: user.email, // 👈 LOGIN EMAIL (INDIVIDUAL)
 
-          // template expects website static
+          // login-related (not sender)
+          personEmail: user.email,
+
           website: "https://badgeconnect.com/issuer",
         },
       };
