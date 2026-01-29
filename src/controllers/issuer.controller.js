@@ -46,6 +46,9 @@ function normalizeIssuerDoc(doc) {
     admin2: normalizeAdmin(obj.admin2),
     admin3: normalizeAdmin(obj.admin3),
 
+    apiAuthKey: obj.apiAuthKey || "",
+
+
     // ✅ AUDIT INFO (read-only for frontend)
     addedByAdmin: obj.addedByAdmin,
     lastUpdatedBy: obj.lastUpdatedBy,
@@ -69,6 +72,11 @@ function normalizeIssuerPayload(body) {
     admin1: normalizeAdmin(body.admin1),
     admin2: normalizeAdmin(body.admin2),
     admin3: normalizeAdmin(body.admin3),
+
+    // edit-only
+    ...(typeof body.apiAuthKey === "string"
+      ? { apiAuthKey: body.apiAuthKey.trim() }
+      : {})
   };
 }
 
@@ -83,30 +91,26 @@ async function sendWelcomeIssuerEmailsIndividually({ issuer, adminEmail }) {
     {
       role: "PRIMARY_CONTACT",
       email: issuer.primaryContact?.email,
-      name: `${issuer.primaryContact?.firstName || ""} ${
-        issuer.primaryContact?.lastName || ""
-      }`,
+      name: `${issuer.primaryContact?.firstName || ""} ${issuer.primaryContact?.lastName || ""
+        }`,
     },
     {
       role: "ADMIN1",
       email: issuer.admin1?.email,
-      name: `${issuer.admin1?.firstName || ""} ${
-        issuer.admin1?.lastName || ""
-      }`,
+      name: `${issuer.admin1?.firstName || ""} ${issuer.admin1?.lastName || ""
+        }`,
     },
     {
       role: "ADMIN2",
       email: issuer.admin2?.email,
-      name: `${issuer.admin2?.firstName || ""} ${
-        issuer.admin2?.lastName || ""
-      }`,
+      name: `${issuer.admin2?.firstName || ""} ${issuer.admin2?.lastName || ""
+        }`,
     },
     {
       role: "ADMIN3",
       email: issuer.admin3?.email,
-      name: `${issuer.admin3?.firstName || ""} ${
-        issuer.admin3?.lastName || ""
-      }`,
+      name: `${issuer.admin3?.firstName || ""} ${issuer.admin3?.lastName || ""
+        }`,
     },
   ];
 
@@ -204,6 +208,54 @@ export async function createIssuer(req, res) {
   }
 }
 
+
+/* ------------------------------------------------------------------
+   Check if issuer has issued any badges
+------------------------------------------------------------------ */
+
+async function issuerHasEarners(issuerId) {
+  console.log("🟡 [maintain_issuers] Checking earners for issuer:", issuerId);
+  console.log(
+    "🟡 [maintain_issuers] Using internal key:",
+    process.env.EARNER_EXISTANCE_KEY
+  );
+  console.log(
+    "🟡 [maintain_issuers] Calling URL:",
+    `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${issuerId}/has-earners`
+  );
+
+  try {
+    const res = await axios.get(
+      `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${issuerId}/has-earners`,
+      {
+        headers: {
+          "x-internal-key": process.env.EARNER_EXISTANCE_KEY,
+        },
+      }
+    );
+
+    console.log("✅ [maintain_issuers] Earner check response status:", res.status);
+    console.log("✅ [maintain_issuers] Earner check response body:", res.data);
+
+    return Boolean(res.data?.hasEarners);
+  } catch (err) {
+    console.error(
+      "❌ [maintain_issuers] issuerHasEarners FAILED",
+      {
+        status: err.response?.status,
+        data: err.response?.data,
+        message: err.message,
+      }
+    );
+
+    // 🔒 FAIL CLOSED — lock org fields if anything goes wrong
+    return true;
+  }
+}
+
+
+
+
 /* ------------------------------------------------------------------
    GET ALL ISSUERS
 ------------------------------------------------------------------ */
@@ -236,23 +288,33 @@ export async function getIssuerById(req, res) {
     const issuer = await Issuer.findOne({
       issuerId: id,
       isDeleted: false,
-    });
+    }).select("+apiAuthKey");
+
 
     if (!issuer) {
       return sendError(res, "Issuer not found", 404);
     }
+    // check if earners exist for this issuer or not
+
+    const hasEarners = await issuerHasEarners(id);
 
     return sendSuccess(
       res,
-      normalizeIssuerDoc(issuer),
-      "Issuer fetched successfully",
-      200
+      {
+        ...normalizeIssuerDoc(issuer),
+        _locks: {
+          orgDetailsLocked: hasEarners,
+        },
+      },
+      "Issuer fetched successfully"
     );
+
   } catch (err) {
     console.error("GET ISSUER ERROR:", err);
     return sendError(res, "Failed to fetch issuer", 500);
   }
 }
+
 
 /* ------------------------------------------------------------------
    UPDATE ISSUER
@@ -276,7 +338,17 @@ export async function updateIssuer(req, res) {
       return sendError(res, "Issuer not found", 404);
     }
 
+    const hasEarners = await issuerHasEarners(id);
     const payload = normalizeIssuerPayload(req.body);
+
+    // 🔒 HARD LOCK ORG FIELDS NOT TO EDIT
+    if (hasEarners) {
+      delete payload.orgName;
+      delete payload.postal;
+      delete payload.website;
+      delete payload.orgEmail;
+      delete payload.supportEmail;
+    }
 
     Object.assign(existing, payload);
     existing.lastUpdatedBy = adminEmail;
