@@ -42,11 +42,14 @@ function normalizeIssuerDoc(doc) {
     primaryContact: normalizePrimaryContact(obj.primaryContact),
     supportEmail: obj.supportEmail || "",
 
+    apiAuthKey: obj.apiAuthKey || "",
+
     admin1: normalizeAdmin(obj.admin1),
     admin2: normalizeAdmin(obj.admin2),
     admin3: normalizeAdmin(obj.admin3),
 
-    apiAuthKey: obj.apiAuthKey || "",
+    reminderSettings: obj.reminderSettings || null,
+
 
 
     // ✅ AUDIT INFO (read-only for frontend)
@@ -72,6 +75,11 @@ function normalizeIssuerPayload(body) {
     admin1: normalizeAdmin(body.admin1),
     admin2: normalizeAdmin(body.admin2),
     admin3: normalizeAdmin(body.admin3),
+
+    // badge payment reminder settings
+    ...(body.reminderSettings
+  ? { reminderSettings: body.reminderSettings }
+  : {}),
 
     // edit-only
     ...(typeof body.apiAuthKey === "string"
