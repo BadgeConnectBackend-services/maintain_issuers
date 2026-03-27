@@ -2,10 +2,10 @@
 
 import express from "express";
 import {
+    adminExistsController,
     loginController,
-    logoutController,
     refreshTokenController,
-    adminExistsController
+    logoutController,
 } from "../controllers/auth.controller.js";
 
 const router = express.Router();
