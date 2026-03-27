@@ -1,408 +1,452 @@
 // src/controllers/issuer.controller.js
 
-import Issuer from "../models/issuer.model.js";
+import Organization from "../models/organization.model.js";
+import { callUserService } from "../utils/internalRequest.js";
 import { sendSuccess, sendError } from "../utils/apiResponse.js";
 import axios from "axios";
 
-/* ------------------------------------------------------------------
-   Helper Normalizers
------------------------------------------------------------------- */
+// ─────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────
 
-function normalizeAdmin(admin = {}) {
+/**
+ * Fetches user details from badgeconnect_user and maps them
+ * back into org slot arrays for response population.
+ */
+async function populateOrgUsers(org) {
+  // Only take the LAST userId from each slot (the active one)
+  const slotEntries = {
+    primaryContact: org.primaryContact?.at(-1) ?? null,
+    admin1: org.admin1?.at(-1) ?? null,
+    admin2: org.admin2?.at(-1) ?? null,
+    admin3: org.admin3?.at(-1) ?? null,
+  };
+
+  const uniqueIds = [...new Set(Object.values(slotEntries).filter(Boolean))];
+  if (!uniqueIds.length) return { ...org, primaryContact: null, admin1: null, admin2: null, admin3: null };
+
+  console.log("🔍 [populateOrgUsers] fetching active users for ids:", uniqueIds);
+
+  const users = await Promise.all(
+    uniqueIds.map(async (userId) => {
+      try {
+        const result = await callUserService("get", `/internal/user/${userId}`);
+        return result?.data || null;
+      } catch {
+        console.warn("⚠️ [populateOrgUsers] could not fetch user:", userId);
+        return null;
+      }
+    })
+  );
+
+  // Build map — only keep users who are active issuers
+  const userMap = {};
+  users.filter(Boolean).forEach((u) => {
+    const isActiveIssuer =
+      u.status === "active" &&
+      !u.isDeleted &&
+      u.userScope === "issuer";
+
+    if (isActiveIssuer) userMap[u.userId] = u;
+    else console.warn("⚠️ [populateOrgUsers] skipping inactive/non-issuer user:", u.userId);
+  });
+
   return {
-    firstName: admin.firstName || "",
-    lastName: admin.lastName || "",
-    email: admin.email || "",
-    orgDept: admin.orgDept || "",
+    ...org,
+    primaryContact: userMap[slotEntries.primaryContact] ?? null,
+    admin1: userMap[slotEntries.admin1] ?? null,
+    admin2: userMap[slotEntries.admin2] ?? null,
+    admin3: userMap[slotEntries.admin3] ?? null,
   };
 }
 
-function normalizePrimaryContact(pc = {}) {
-  return {
-    firstName: pc.firstName || "",
-    lastName: pc.lastName || "",
-    email: pc.email || "",
-    phone: pc.phone || "",
-  };
-}
-
-function normalizeIssuerDoc(doc) {
-  if (!doc) return null;
-
-  const obj = doc.toObject ? doc.toObject() : { ...doc };
-
-  return {
-    issuerId: obj.issuerId,
-
-    orgName: obj.orgName || "",
-    postal: obj.postal || "",
-    website: obj.website || "",
-    orgEmail: obj.orgEmail || "",
-
-    primaryContact: normalizePrimaryContact(obj.primaryContact),
-    supportEmail: obj.supportEmail || "",
-
-    apiAuthKey: obj.apiAuthKey || "",
-
-    admin1: normalizeAdmin(obj.admin1),
-    admin2: normalizeAdmin(obj.admin2),
-    admin3: normalizeAdmin(obj.admin3),
-
-    reminderSettings: obj.reminderSettings || null,
-
-
-
-    // ✅ AUDIT INFO (read-only for frontend)
-    addedByAdmin: obj.addedByAdmin,
-    lastUpdatedBy: obj.lastUpdatedBy,
-
-    isDeleted: !!obj.isDeleted,
-    createdAt: obj.createdAt,
-    updatedAt: obj.updatedAt,
-  };
-}
-
-function normalizeIssuerPayload(body) {
-  return {
-    orgName: body.orgName,
-    postal: body.postal,
-    website: body.website,
-    orgEmail: body.orgEmail,
-
-    primaryContact: normalizePrimaryContact(body.primaryContact),
-    supportEmail: body.supportEmail,
-
-    admin1: normalizeAdmin(body.admin1),
-    admin2: normalizeAdmin(body.admin2),
-    admin3: normalizeAdmin(body.admin3),
-
-    // badge payment reminder settings
-    ...(body.reminderSettings
-  ? { reminderSettings: body.reminderSettings }
-  : {}),
-
-    // edit-only
-    ...(typeof body.apiAuthKey === "string"
-      ? { apiAuthKey: body.apiAuthKey.trim() }
-      : {})
-  };
-}
-
-/* ------------------------------------------------------------------
-   CREATE ISSUER
------------------------------------------------------------------- */
-
-async function sendWelcomeIssuerEmailsIndividually({ issuer, adminEmail }) {
-  console.log("📧 Preparing individual welcome emails for issuer onboarding");
-
-  const recipients = [
-    {
-      role: "PRIMARY_CONTACT",
-      email: issuer.primaryContact?.email,
-      name: `${issuer.primaryContact?.firstName || ""} ${issuer.primaryContact?.lastName || ""
-        }`,
-    },
-    {
-      role: "ADMIN1",
-      email: issuer.admin1?.email,
-      name: `${issuer.admin1?.firstName || ""} ${issuer.admin1?.lastName || ""
-        }`,
-    },
-    {
-      role: "ADMIN2",
-      email: issuer.admin2?.email,
-      name: `${issuer.admin2?.firstName || ""} ${issuer.admin2?.lastName || ""
-        }`,
-    },
-    {
-      role: "ADMIN3",
-      email: issuer.admin3?.email,
-      name: `${issuer.admin3?.firstName || ""} ${issuer.admin3?.lastName || ""
-        }`,
-    },
-  ];
-
-  for (const user of recipients) {
-    if (!user.email) {
-      console.log(`⏭️ Skipping ${user.role} (email missing)`);
-      continue;
-    }
-
-    try {
-      console.log(`📨 Sending welcome email to ${user.role}: ${user.email}`);
-
-      const payload = {
-        from: process.env.EMAIL_SENDER_SES, // "BadgeConnect <no-reply@badgeconnect.cloudstry.com>"
-        to: user.email, // user's real inbox
-        subject:
-          "Issuer Onboarding Confirmation – BadgeConnect Digital Credential Platform",
-        template: "welcome-issuer",
-        variables: {
-          recipientName: user.name || "User",
-          recipientRole: user.role,
-          orgName: issuer.orgName,
-          orgEmail: issuer.orgEmail,
-          supportEmail: issuer.supportEmail,
-
-          // login-related (not sender)
-          personEmail: user.email,
-
-          website: "https://badgeconnect.com/issuer",
-        },
-      };
-
-      console.log("📤 Email payload:", payload);
-
-      await axios.post(
-        `${process.env.EMAIL_SERVICE_BASE_URL}/email/email-send`,
-        payload,
-        {
-          headers: {
-            "x-internal-api-key": process.env.EMAIL_SERVICE_INTERNAL_KEY,
-          },
-        }
-      );
-
-      console.log(`✅ Welcome email sent to ${user.role}`);
-    } catch (err) {
-      console.error(
-        `❌ Failed to send email to ${user.role}:`,
-        err.response?.data || err.message
-      );
-    }
-  }
-}
-
+// ─────────────────────────────────────────────
+//  POST /issuer
+//  Creates org in local DB + users in badgeconnect_user
+// ─────────────────────────────────────────────
 export async function createIssuer(req, res) {
   try {
     const adminEmail = req.admin?.email;
+    if (!adminEmail) return sendError(res, "Unauthorized admin", 401);
 
-    if (!adminEmail) {
-      return sendError(res, "Unauthorized admin", 401);
+    const {
+      orgName, orgEmail, website, supportEmail, postal,
+      primaryContact, admin1, admin2, admin3,
+      reminderSettings,
+    } = req.body;
+
+    console.log("🆕 [createIssuer] admin:", adminEmail);
+    console.log("📥 [createIssuer] payload:", JSON.stringify(req.body, null, 2));
+
+    if (!orgName || !orgEmail) {
+      return sendError(res, "orgName and orgEmail are required", 400);
     }
 
-    console.log("🆕 Admin creating issuer:", adminEmail);
+    if (!primaryContact?.email) {
+      return sendError(res, "primaryContact email is required", 400);
+    }
 
-    const payload = normalizeIssuerPayload(req.body);
-
-    const issuer = await Issuer.create({
-      ...payload,
-      addedByAdmin: adminEmail,
-      lastUpdatedBy: null,
+    // ── Step 1: Create Organization locally ──────────────────────
+    const org = await Organization.create({
+      orgName,
+      orgEmail: orgEmail.trim().toLowerCase(),
+      website: website || null,
+      supportEmail: supportEmail || null,
+      postal: postal || null,
+      addedByAdmin: adminEmail.trim().toLowerCase(),
+      ...(reminderSettings ? { reminderSettings } : {}),
+      primaryContact: [],
+      admin1: [],
+      admin2: [],
+      admin3: [],
     });
 
-    console.log("✅ Issuer created:", issuer.issuerId);
+    const orgId = org.orgId;
+    console.log("✅ [createIssuer] Organization created:", orgId);
 
-    // 🔔 SEND WELCOME EMAIL TO EACH USER (NON-BLOCKING)
-    sendWelcomeIssuerEmailsIndividually({
-      issuer,
-      adminEmail,
-    });
+    // ── Step 2: Create GlobalUsers in badgeconnect_user ──────────
+    const commonPayload = {
+      orgId,
+      orgName,
+      userScope: "issuer",
+      createdBy: adminEmail,
+    };
 
-    return sendSuccess(
-      res,
-      normalizeIssuerDoc(issuer),
-      "Issuer created successfully",
-      201
+    const slots = [
+      { key: "primaryContact", data: primaryContact },
+      { key: "admin1", data: admin1 },
+      { key: "admin2", data: admin2 },
+      { key: "admin3", data: admin3 },
+    ];
+
+    const slotResults = {};
+    const createdUserIds = [];
+
+    for (const { key, data } of slots) {
+      if (!data?.email) {
+        slotResults[key] = null;
+        continue;
+      }
+
+      try {
+        const userPayload = { ...commonPayload, ...data };
+        console.log(`📡 [createIssuer] creating user for ${key}:`, data.email);
+
+        const result = await callUserService("post", "/internal/user", userPayload);
+
+        slotResults[key] = result.data.userId;
+        createdUserIds.push(result.data.userId);
+        console.log(`✅ [createIssuer] user created for ${key}:`, result.data.userId);
+      } catch (err) {
+        // User creation failed — rollback org and any users already created
+        console.error(`❌ [createIssuer] user creation failed for ${key}:`, err?.response?.data?.message || err.message);
+
+        // Rollback: soft delete already-created users
+        for (const userId of createdUserIds) {
+          try {
+            await callUserService("delete", `/internal/user/${userId}`);
+            console.log("🔄 [createIssuer] rolled back user:", userId);
+          } catch (rbErr) {
+            console.error("❌ [createIssuer] rollback failed for user:", userId, rbErr.message);
+          }
+        }
+
+        // Hard delete org — it has no users yet, clean removal
+        await Organization.deleteOne({ orgId });
+        console.log("🔄 [createIssuer] rolled back org:", orgId);
+
+        const message = err?.response?.data?.message || "Failed to create issuer user";
+        return sendError(res, message, err?.response?.status || 500);
+      }
+    }
+
+    // ── Step 3: Write userIds back into org arrays ────────────────
+    await Organization.updateOne(
+      { orgId },
+      {
+        primaryContact: slotResults.primaryContact ? [slotResults.primaryContact] : [],
+        admin1: slotResults.admin1 ? [slotResults.admin1] : [],
+        admin2: slotResults.admin2 ? [slotResults.admin2] : [],
+        admin3: slotResults.admin3 ? [slotResults.admin3] : [],
+      }
     );
-  } catch (err) {
-    console.error("CREATE ISSUER ERROR:", err);
 
-    if (err.code === 11000 && err.keyPattern?.orgEmail) {
+    console.log("✅ [createIssuer] org arrays updated with userIds");
+
+    const fullOrg = await Organization.findOne({ orgId }).lean();
+
+    const responseData = {
+      orgId,
+      orgName: fullOrg.orgName,
+      orgEmail: fullOrg.orgEmail,
+      website: fullOrg.website,
+      supportEmail: fullOrg.supportEmail,
+      postal: fullOrg.postal,
+      addedByAdmin: fullOrg.addedByAdmin,
+      reminderSettings: fullOrg.reminderSettings,
+      primaryContact: slotResults.primaryContact
+        ? { userId: slotResults.primaryContact, ...primaryContact }
+        : null,
+      admin1: slotResults.admin1 ? { userId: slotResults.admin1, ...admin1 } : null,
+      admin2: slotResults.admin2 ? { userId: slotResults.admin2, ...admin2 } : null,
+      admin3: slotResults.admin3 ? { userId: slotResults.admin3, ...admin3 } : null,
+      createdAt: fullOrg.createdAt,
+    };
+
+    console.log("📤 [createIssuer] response:", JSON.stringify(responseData, null, 2));
+
+    // ── Step 4: Welcome emails (non-blocking) ─────────────────────
+    sendWelcomeEmails({ issuer: responseData, adminEmail }).catch((err) =>
+      console.error("❌ [createIssuer] welcome email error:", err.message)
+    );
+
+    return sendSuccess(res, responseData, "Issuer created successfully", 201);
+  } catch (err) {
+    console.error("❌ [createIssuer] error:", err.message);
+    if (err.code === 11000) {
       return sendError(res, "Organization email already exists", 400);
     }
-
     return sendError(res, err.message || "Failed to create issuer", 500);
   }
 }
 
-
-/* ------------------------------------------------------------------
-   Check if issuer has issued any badges
------------------------------------------------------------------- */
-
-async function issuerHasEarners(issuerId) {
-  console.log("🟡 [maintain_issuers] Checking earners for issuer:", issuerId);
-  console.log(
-    "🟡 [maintain_issuers] Using internal key:",
-    process.env.EARNER_EXISTANCE_KEY
-  );
-  console.log(
-    "🟡 [maintain_issuers] Calling URL:",
-    `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${issuerId}/has-earners`
-  );
-
-  try {
-    const res = await axios.get(
-      `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${issuerId}/has-earners`,
-      {
-        headers: {
-          "x-internal-key": process.env.EARNER_EXISTANCE_KEY,
-        },
-      }
-    );
-
-    console.log("✅ [maintain_issuers] Earner check response status:", res.status);
-    console.log("✅ [maintain_issuers] Earner check response body:", res.data);
-
-    return Boolean(res.data?.hasEarners);
-  } catch (err) {
-    console.error(
-      "❌ [maintain_issuers] issuerHasEarners FAILED",
-      {
-        status: err.response?.status,
-        data: err.response?.data,
-        message: err.message,
-      }
-    );
-
-    // 🔒 FAIL CLOSED — lock org fields if anything goes wrong
-    return true;
-  }
-}
-
-
-
-
-/* ------------------------------------------------------------------
-   GET ALL ISSUERS
------------------------------------------------------------------- */
+// ─────────────────────────────────────────────
+//  GET /issuer
+// ─────────────────────────────────────────────
 export async function getIssuers(req, res) {
   try {
-    const issuers = await Issuer.find({ isDeleted: false })
+    console.log("📊 [getIssuers] fetching all orgs");
+
+    const orgs = await Organization.find({ isDeleted: false })
       .sort({ createdAt: -1 })
       .lean();
 
-    const normalized = issuers.map(normalizeIssuerDoc);
+    console.log("✅ [getIssuers] found:", orgs.length, "orgs");
 
-    return sendSuccess(res, normalized, "Issuers fetched successfully", 200);
+    const populated = await Promise.all(orgs.map(populateOrgUsers));
+
+    console.log("📤 [getIssuers] returning populated orgs");
+    return sendSuccess(res, populated, "Issuers fetched successfully");
   } catch (err) {
-    console.error("GET ISSUERS ERROR:", err);
+    console.error("❌ [getIssuers] error:", err.message);
     return sendError(res, "Failed to fetch issuers", 500);
   }
 }
 
-/* ------------------------------------------------------------------
-   GET SINGLE ISSUER
------------------------------------------------------------------- */
+// ─────────────────────────────────────────────
+//  GET /issuer/:id
+// ─────────────────────────────────────────────
 export async function getIssuerById(req, res) {
   try {
     const { id } = req.params;
+    console.log("🔎 [getIssuerById] orgId:", id);
 
-    if (!id || typeof id !== "string") {
-      return sendError(res, "Invalid issuer ID", 400);
-    }
+    const org = await Organization.findOne({ orgId: id, isDeleted: false })
+      .select("+apiAuthKey")
+      .lean();
 
-    const issuer = await Issuer.findOne({
-      issuerId: id,
-      isDeleted: false,
-    }).select("+apiAuthKey");
+    if (!org) return sendError(res, "Issuer not found", 404);
 
+    const [populated, hasEarners] = await Promise.all([
+      populateOrgUsers(org),
+      issuerHasEarners(id),
+    ]);
 
-    if (!issuer) {
-      return sendError(res, "Issuer not found", 404);
-    }
-    // check if earners exist for this issuer or not
+    const responseData = {
+      ...populated,
+      _locks: { orgDetailsLocked: hasEarners },
+    };
 
-    const hasEarners = await issuerHasEarners(id);
-
-    return sendSuccess(
-      res,
-      {
-        ...normalizeIssuerDoc(issuer),
-        _locks: {
-          orgDetailsLocked: hasEarners,
-        },
-      },
-      "Issuer fetched successfully"
-    );
-
+    console.log("📤 [getIssuerById] returning org:", id, "locked:", hasEarners);
+    return sendSuccess(res, responseData, "Issuer fetched successfully");
   } catch (err) {
-    console.error("GET ISSUER ERROR:", err);
+    console.error("❌ [getIssuerById] error:", err.message);
     return sendError(res, "Failed to fetch issuer", 500);
   }
 }
 
-
-/* ------------------------------------------------------------------
-   UPDATE ISSUER
------------------------------------------------------------------- */
+// ─────────────────────────────────────────────
+//  PUT /issuer/:id
+// ─────────────────────────────────────────────
 export async function updateIssuer(req, res) {
   try {
     const adminEmail = req.admin?.email;
-
-    if (!adminEmail) {
-      return sendError(res, "Unauthorized admin", 401);
-    }
+    if (!adminEmail) return sendError(res, "Unauthorized admin", 401);
 
     const { id } = req.params;
+    console.log("✏️ [updateIssuer] orgId:", id, "admin:", adminEmail);
+    console.log("📥 [updateIssuer] payload:", JSON.stringify(req.body, null, 2));
 
-    const existing = await Issuer.findOne({
-      issuerId: id,
-      isDeleted: false,
-    });
-
-    if (!existing) {
-      return sendError(res, "Issuer not found", 404);
-    }
+    const org = await Organization.findOne({ orgId: id, isDeleted: false });
+    if (!org) return sendError(res, "Issuer not found", 404);
 
     const hasEarners = await issuerHasEarners(id);
-    const payload = normalizeIssuerPayload(req.body);
+    console.log("🔒 [updateIssuer] hasEarners:", hasEarners);
 
-    // 🔒 HARD LOCK ORG FIELDS NOT TO EDIT
-    if (hasEarners) {
-      delete payload.orgName;
-      delete payload.postal;
-      delete payload.website;
-      delete payload.orgEmail;
-      delete payload.supportEmail;
+    const {
+      orgName, orgEmail, website, supportEmail, postal,
+      reminderSettings, apiAuthKey,
+      admin1, admin2, admin3,
+    } = req.body;
+
+    // ── Update org-level fields (locked if has earners) ──────────
+    if (!hasEarners) {
+      if (orgName) org.orgName = orgName;
+      if (orgEmail) org.orgEmail = orgEmail.trim().toLowerCase();
+      if (website) org.website = website;
+      if (supportEmail) org.supportEmail = supportEmail;
+      if (postal) org.postal = postal;
+    } else {
+      console.log("⚠️ [updateIssuer] org fields locked — earners exist");
     }
 
-    Object.assign(existing, payload);
-    existing.lastUpdatedBy = adminEmail;
+    if (reminderSettings) org.reminderSettings = reminderSettings;
+    if (typeof apiAuthKey === "string") org.apiAuthKey = apiAuthKey.trim();
+    org.lastUpdatedBy = adminEmail.trim().toLowerCase();
 
-    await existing.save();
+    await org.save();
+    console.log("✅ [updateIssuer] org saved:", id);
 
-    return sendSuccess(
-      res,
-      normalizeIssuerDoc(existing),
-      "Issuer updated successfully",
-      200
-    );
+    // ── Update user name fields via badgeconnect_user ─────────────
+    const contactUpdates = [
+      { slot: "admin1", data: admin1 },
+      { slot: "admin2", data: admin2 },
+      { slot: "admin3", data: admin3 },
+    ];
+
+    for (const { slot, data } of contactUpdates) {
+      if (!data) continue;
+
+      const userIds = org[slot];
+      if (!userIds.length) continue;
+
+      const latestUserId = userIds[userIds.length - 1];
+      const updatePayload = {
+        firstName: data.firstName || undefined,
+        lastName: data.lastName || undefined,
+        lastUpdatedBy: adminEmail,
+      };
+
+      console.log(`📡 [updateIssuer] updating user ${latestUserId} for slot ${slot}`);
+
+      try {
+        await callUserService("put", `/internal/user/${latestUserId}`, updatePayload);
+        console.log(`✅ [updateIssuer] user updated for ${slot}:`, latestUserId);
+      } catch (err) {
+        console.warn(`⚠️ [updateIssuer] user update failed for ${slot}:`, err.message);
+        // Non-fatal — org is already saved
+      }
+    }
+
+    return sendSuccess(res, { orgId: id }, "Issuer updated successfully");
   } catch (err) {
-    console.error("UPDATE ISSUER ERROR:", err);
+    console.error("❌ [updateIssuer] error:", err.message);
     return sendError(res, err.message || "Failed to update issuer", 500);
   }
 }
 
-/* ------------------------------------------------------------------
-   DELETE ISSUER
------------------------------------------------------------------- */
+// ─────────────────────────────────────────────
+//  DELETE /issuer/:id
+// ─────────────────────────────────────────────
 export async function deleteIssuer(req, res) {
   try {
     const { id } = req.params;
+    console.log("🗑️ [deleteIssuer] orgId:", id);
 
-    const issuer = await Issuer.findOne({ issuerId: id });
+    const org = await Organization.findOne({ orgId: id });
 
-    if (!issuer) {
-      return sendError(res, "Issuer not found", 404);
+    if (!org) return sendError(res, "Issuer not found", 404);
+    if (org.isDeleted) return sendError(res, "Issuer already deleted", 400);
+
+    // Collect all userIds linked to this org
+    const allUserIds = [
+      ...org.primaryContact,
+      ...org.admin1,
+      ...org.admin2,
+      ...org.admin3,
+    ].filter(Boolean);
+
+    // Soft delete org locally
+    org.isDeleted = true;
+    org.status = "inactive";
+    await org.save();
+    console.log("✅ [deleteIssuer] org soft deleted:", id);
+
+    // Soft delete all linked users in badgeconnect_user
+    for (const userId of allUserIds) {
+      try {
+        await callUserService("delete", `/internal/user/${userId}`);
+        console.log("✅ [deleteIssuer] user deactivated:", userId);
+      } catch (err) {
+        console.warn("⚠️ [deleteIssuer] could not deactivate user:", userId, err.message);
+        // Non-fatal — continue deactivating others
+      }
     }
 
-    if (issuer.isDeleted) {
-      return sendError(res, "Issuer already deleted", 400);
-    }
-
-    issuer.isDeleted = true;
-    await issuer.save();
-
-    return sendSuccess(
-      res,
-      { issuerId: id },
-      "Issuer deleted successfully",
-      200
-    );
+    console.log("📤 [deleteIssuer] complete — users deactivated:", allUserIds.length);
+    return sendSuccess(res, { orgId: id }, "Issuer deleted successfully");
   } catch (err) {
-    console.error("DELETE ISSUER ERROR:", err);
+    console.error("❌ [deleteIssuer] error:", err.message);
     return sendError(res, "Failed to delete issuer", 500);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  INTERNAL HELPERS
+// ─────────────────────────────────────────────
+
+async function issuerHasEarners(orgId) {
+  try {
+    console.log("🔍 [issuerHasEarners] checking orgId:", orgId);
+    const response = await axios.get(
+      `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${orgId}/has-earners`,
+      { headers: { "x-internal-key": process.env.EARNER_EXISTANCE_KEY } }
+    );
+    const hasEarners = Boolean(response.data?.hasEarners);
+    console.log("✅ [issuerHasEarners] result:", hasEarners);
+    return hasEarners;
+  } catch (err) {
+    console.error("❌ [issuerHasEarners] check failed — defaulting to locked:", err.message);
+    return true; // fail closed
+  }
+}
+
+async function sendWelcomeEmails({ issuer, adminEmail }) {
+  if (!issuer) return;
+
+  const contacts = [
+    { role: "PRIMARY_CONTACT", ...issuer.primaryContact },
+    { role: "ADMIN1", ...issuer.admin1 },
+    { role: "ADMIN2", ...issuer.admin2 },
+    { role: "ADMIN3", ...issuer.admin3 },
+  ].filter((c) => c?.email);
+
+  console.log("📧 [sendWelcomeEmails] sending to", contacts.length, "contacts");
+
+  for (const contact of contacts) {
+    try {
+      await axios.post(
+        `${process.env.EMAIL_SERVICE_BASE_URL}/email/email-send`,
+        {
+          from: adminEmail,
+          to: contact.email,
+          subject: "Welcome to BadgeConnect 🎉",
+          template: "welcome-issuer",
+          variables: {
+            recipientName: `${contact.firstName || ""} ${contact.lastName || ""}`.trim(),
+            recipientRole: contact.role,
+            orgName: issuer.orgName,
+            orgEmail: issuer.orgEmail,
+            supportEmail: issuer.supportEmail,
+            personEmail: contact.email,
+            website: "https://badgeconnect.com/issuer",
+          },
+        },
+        { headers: { "x-internal-api-key": process.env.EMAIL_SERVICE_INTERNAL_KEY } }
+      );
+      console.log(`✅ [sendWelcomeEmails] sent to ${contact.role}: ${contact.email}`);
+    } catch (err) {
+      console.error(`❌ [sendWelcomeEmails] failed for ${contact.role}:`, err.message);
+    }
   }
 }
