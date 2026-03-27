@@ -73,7 +73,9 @@ jobs:
 
             docker run -d \
               --name maintain_issuers \
+              --network badgeconnect_net \
               --env-file ~/services/backend/maintain_issuers/.env \
+              --network badgeconnect_net \
               -p 5000:5000 \
               --restart unless-stopped \
               rajsondhiya/maintain_issuers:$IMAGE_TAG
