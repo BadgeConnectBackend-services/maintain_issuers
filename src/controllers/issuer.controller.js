@@ -286,7 +286,7 @@ export async function updateIssuer(req, res) {
     const {
       orgName, orgEmail, website, supportEmail, postal,
       reminderSettings, apiAuthKey,
-      admin1, admin2, admin3,
+      primaryContact, admin1, admin2, admin3,
     } = req.body;
 
     // ── Update org-level fields (locked if has earners) ──────────
@@ -307,35 +307,137 @@ export async function updateIssuer(req, res) {
     await org.save();
     console.log("✅ [updateIssuer] org saved:", id);
 
-    // ── Update user name fields via badgeconnect_user ─────────────
+    // ── Update/Create user details via badgeconnect_user ─────────────
     const contactUpdates = [
+      { slot: "primaryContact", data: primaryContact },
       { slot: "admin1", data: admin1 },
       { slot: "admin2", data: admin2 },
       { slot: "admin3", data: admin3 },
     ];
+    const removableSlots = new Set(["admin2", "admin3"]);
+
+    const slotsToUpdate = []; // Track slots that need org array update
 
     for (const { slot, data } of contactUpdates) {
-      if (!data) continue;
-
       const userIds = org[slot];
-      if (!userIds.length) continue;
+      const existingUserId = userIds.length > 0 ? userIds[userIds.length - 1] : null;
+      const newEmail = data?.email?.trim().toLowerCase() || "";
 
-      const latestUserId = userIds[userIds.length - 1];
-      const updatePayload = {
-        firstName: data.firstName || undefined,
-        lastName: data.lastName || undefined,
-        lastUpdatedBy: adminEmail,
-      };
+      if (!newEmail) {
+        if (removableSlots.has(slot) && existingUserId) {
+          console.log(`🗑️ [updateIssuer] clearing ${slot} user:`, existingUserId);
 
-      console.log(`📡 [updateIssuer] updating user ${latestUserId} for slot ${slot}`);
-
-      try {
-        await callUserService("put", `/internal/user/${latestUserId}`, updatePayload);
-        console.log(`✅ [updateIssuer] user updated for ${slot}:`, latestUserId);
-      } catch (err) {
-        console.warn(`⚠️ [updateIssuer] user update failed for ${slot}:`, err.message);
-        // Non-fatal — org is already saved
+          try {
+            await callUserService("delete", `/internal/user/${existingUserId}`);
+            slotsToUpdate.push({ slot, userIds: [] });
+            console.log(`✅ [updateIssuer] ${slot} cleared and user deactivated:`, existingUserId);
+          } catch (err) {
+            console.warn(`⚠️ [updateIssuer] failed to clear ${slot}:`, err?.message || err);
+          }
+        }
+        continue;
       }
+
+      // Fetch existing user to compare email
+      let existingUser = null;
+      if (existingUserId) {
+        try {
+          const res = await callUserService("get", `/internal/user/${existingUserId}`);
+          existingUser = res?.data || null;
+        } catch {}
+      }
+
+      const existingEmail = existingUser?.email?.trim().toLowerCase();
+      const emailChanged = existingEmail && existingEmail !== newEmail;
+
+      if (emailChanged) {
+        // Email changed — deactivate old user and create new one
+        console.log(`🔄 [updateIssuer] email changed for ${slot}: ${existingEmail} → ${newEmail}`);
+
+        try {
+          // Step 1: Mark old user as inactive/deleted
+          await callUserService("delete", `/internal/user/${existingUserId}`);
+          console.log(`✅ [updateIssuer] old user deactivated: ${existingUserId}`);
+        } catch (err) {
+          console.warn(`⚠️ [updateIssuer] failed to deactivate old user ${existingUserId}:`, err.message);
+        }
+
+        // Step 2: Create new user with new email
+        try {
+          const userPayload = {
+            orgId: org.orgId,
+            orgName: org.orgName,
+            orgDept: data.orgDept || undefined,
+            firstName: data.firstName || undefined,
+            lastName: data.lastName || undefined,
+            email: newEmail,
+            userScope: "issuer",
+            createdBy: adminEmail,
+          };
+
+          const result = await callUserService("post", "/internal/user", userPayload);
+          const newUserId = result.data.userId;
+
+          // Update org array with new userId (append, don't replace — keeps history)
+          userIds.push(newUserId);
+          slotsToUpdate.push({ slot, userIds });
+          console.log(`✅ [updateIssuer] new user created for ${slot}:`, newUserId);
+        } catch (err) {
+          console.warn(`⚠️ [updateIssuer] user creation failed for ${slot}:`, err?.response?.data?.message || err.message);
+        }
+      } else if (existingUserId) {
+        // Email same or no change — just update user fields
+        const updatePayload = {
+          firstName: data.firstName || undefined,
+          lastName: data.lastName || undefined,
+          orgDept: data.orgDept || undefined,
+          lastUpdatedBy: adminEmail,
+        };
+
+        console.log(`📡 [updateIssuer] updating user ${existingUserId} for slot ${slot}`);
+
+        try {
+          await callUserService("put", `/internal/user/${existingUserId}`, updatePayload);
+          console.log(`✅ [updateIssuer] user updated for ${slot}:`, existingUserId);
+        } catch (err) {
+          console.warn(`⚠️ [updateIssuer] user update failed for ${slot}:`, err.message);
+        }
+      } else {
+        // No user exists for this slot — create new user
+        console.log(`🆕 [updateIssuer] creating new user for ${slot}:`, newEmail);
+
+        try {
+          const userPayload = {
+            orgId: org.orgId,
+            orgName: org.orgName,
+            orgDept: data.orgDept || undefined,
+            firstName: data.firstName || undefined,
+            lastName: data.lastName || undefined,
+            email: newEmail,
+            userScope: "issuer",
+            createdBy: adminEmail,
+          };
+
+          const result = await callUserService("post", "/internal/user", userPayload);
+          const newUserId = result.data.userId;
+
+          userIds.push(newUserId);
+          slotsToUpdate.push({ slot, userIds });
+          console.log(`✅ [updateIssuer] user created for ${slot}:`, newUserId);
+        } catch (err) {
+          console.warn(`⚠️ [updateIssuer] user creation failed for ${slot}:`, err?.response?.data?.message || err.message);
+        }
+      }
+    }
+
+    // Update org arrays with new userIds (only for slots that changed)
+    if (slotsToUpdate.length > 0) {
+      const updateOps = {};
+      for (const { slot, userIds } of slotsToUpdate) {
+        updateOps[slot] = userIds;
+      }
+      await Organization.updateOne({ orgId: id }, { $set: updateOps });
+      console.log("✅ [updateIssuer] org arrays updated for slots:", slotsToUpdate.map(s => s.slot));
     }
 
     return sendSuccess(res, { orgId: id }, "Issuer updated successfully");
