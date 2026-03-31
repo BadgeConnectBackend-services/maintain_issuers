@@ -72,6 +72,6 @@ jobs:
 
             docker tag rajsondhiya/maintain_issuers:$IMAGE_TAG rajsondhiya/maintain_issuers:latest
 
-            docker compose up -d maintain_issuers
+            docker compose up -d --force-recreate --remove-orphans maintain_issuers
 
             docker image prune -f
