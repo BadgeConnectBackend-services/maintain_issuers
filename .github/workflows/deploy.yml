@@ -66,17 +66,12 @@ jobs:
 
             IMAGE_TAG=${{ github.ref_name }}
 
+            cd ~/services
+
             docker pull rajsondhiya/maintain_issuers:$IMAGE_TAG
 
-            docker stop maintain_issuers || true
-            docker rm maintain_issuers || true
+            docker tag rajsondhiya/maintain_issuers:$IMAGE_TAG rajsondhiya/maintain_issuers:latest
 
-            docker run -d \
-              --name maintain_issuers \
-              --network badgeconnect_net \
-              --env-file ~/services/backend/maintain_issuers/.env \
-              -p 5000:5000 \
-              --restart unless-stopped \
-              rajsondhiya/maintain_issuers:$IMAGE_TAG
+            docker compose up -d --force-recreate --remove-orphans maintain_issuers
 
             docker image prune -f
