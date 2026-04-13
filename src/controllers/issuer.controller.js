@@ -23,9 +23,19 @@ async function populateOrgUsers(org) {
   };
 
   const uniqueIds = [...new Set(Object.values(slotEntries).filter(Boolean))];
-  if (!uniqueIds.length) return { ...org, primaryContact: null, admin1: null, admin2: null, admin3: null };
+  if (!uniqueIds.length)
+    return {
+      ...org,
+      primaryContact: null,
+      admin1: null,
+      admin2: null,
+      admin3: null,
+    };
 
-  console.log("🔍 [populateOrgUsers] fetching active users for ids:", uniqueIds);
+  console.log(
+    "🔍 [populateOrgUsers] fetching active users for ids:",
+    uniqueIds,
+  );
 
   const users = await Promise.all(
     uniqueIds.map(async (userId) => {
@@ -36,19 +46,21 @@ async function populateOrgUsers(org) {
         console.warn("⚠️ [populateOrgUsers] could not fetch user:", userId);
         return null;
       }
-    })
+    }),
   );
 
   // Build map — only keep users who are active issuers
   const userMap = {};
   users.filter(Boolean).forEach((u) => {
     const isActiveIssuer =
-      u.status === "active" &&
-      !u.isDeleted &&
-      u.userScope === "issuer";
+      u.status === "active" && !u.isDeleted && u.userScope === "issuer";
 
     if (isActiveIssuer) userMap[u.userId] = u;
-    else console.warn("⚠️ [populateOrgUsers] skipping inactive/non-issuer user:", u.userId);
+    else
+      console.warn(
+        "⚠️ [populateOrgUsers] skipping inactive/non-issuer user:",
+        u.userId,
+      );
   });
 
   return {
@@ -70,13 +82,23 @@ export async function createIssuer(req, res) {
     if (!adminEmail) return sendError(res, "Unauthorized admin", 401);
 
     const {
-      orgName, orgEmail, website, supportEmail, postal,
-      primaryContact, admin1, admin2, admin3,
+      orgName,
+      orgEmail,
+      website,
+      supportEmail,
+      postal,
+      primaryContact,
+      admin1,
+      admin2,
+      admin3,
       reminderSettings,
     } = req.body;
 
     console.log("🆕 [createIssuer] admin:", adminEmail);
-    console.log("📥 [createIssuer] payload:", JSON.stringify(req.body, null, 2));
+    console.log(
+      "📥 [createIssuer] payload:",
+      JSON.stringify(req.body, null, 2),
+    );
 
     if (!orgName || !orgEmail) {
       return sendError(res, "orgName and orgEmail are required", 400);
@@ -132,14 +154,24 @@ export async function createIssuer(req, res) {
         const userPayload = { ...commonPayload, ...data };
         console.log(`📡 [createIssuer] creating user for ${key}:`, data.email);
 
-        const result = await callUserService("post", "/internal/user", userPayload);
+        const result = await callUserService(
+          "post",
+          "/internal/user",
+          userPayload,
+        );
 
         slotResults[key] = result.data.userId;
         createdUserIds.push(result.data.userId);
-        console.log(`✅ [createIssuer] user created for ${key}:`, result.data.userId);
+        console.log(
+          `✅ [createIssuer] user created for ${key}:`,
+          result.data.userId,
+        );
       } catch (err) {
         // User creation failed — rollback org and any users already created
-        console.error(`❌ [createIssuer] user creation failed for ${key}:`, err?.response?.data?.message || err.message);
+        console.error(
+          `❌ [createIssuer] user creation failed for ${key}:`,
+          err?.response?.data?.message || err.message,
+        );
 
         // Rollback: soft delete already-created users
         for (const userId of createdUserIds) {
@@ -147,7 +179,11 @@ export async function createIssuer(req, res) {
             await callUserService("delete", `/internal/user/${userId}`);
             console.log("🔄 [createIssuer] rolled back user:", userId);
           } catch (rbErr) {
-            console.error("❌ [createIssuer] rollback failed for user:", userId, rbErr.message);
+            console.error(
+              "❌ [createIssuer] rollback failed for user:",
+              userId,
+              rbErr.message,
+            );
           }
         }
 
@@ -155,7 +191,8 @@ export async function createIssuer(req, res) {
         await Organization.deleteOne({ orgId });
         console.log("🔄 [createIssuer] rolled back org:", orgId);
 
-        const message = err?.response?.data?.message || "Failed to create issuer user";
+        const message =
+          err?.response?.data?.message || "Failed to create issuer user";
         return sendError(res, message, err?.response?.status || 500);
       }
     }
@@ -164,11 +201,13 @@ export async function createIssuer(req, res) {
     await Organization.updateOne(
       { orgId },
       {
-        primaryContact: slotResults.primaryContact ? [slotResults.primaryContact] : [],
+        primaryContact: slotResults.primaryContact
+          ? [slotResults.primaryContact]
+          : [],
         admin1: slotResults.admin1 ? [slotResults.admin1] : [],
         admin2: slotResults.admin2 ? [slotResults.admin2] : [],
         admin3: slotResults.admin3 ? [slotResults.admin3] : [],
-      }
+      },
     );
 
     console.log("✅ [createIssuer] org arrays updated with userIds");
@@ -187,17 +226,26 @@ export async function createIssuer(req, res) {
       primaryContact: slotResults.primaryContact
         ? { userId: slotResults.primaryContact, ...primaryContact }
         : null,
-      admin1: slotResults.admin1 ? { userId: slotResults.admin1, ...admin1 } : null,
-      admin2: slotResults.admin2 ? { userId: slotResults.admin2, ...admin2 } : null,
-      admin3: slotResults.admin3 ? { userId: slotResults.admin3, ...admin3 } : null,
+      admin1: slotResults.admin1
+        ? { userId: slotResults.admin1, ...admin1 }
+        : null,
+      admin2: slotResults.admin2
+        ? { userId: slotResults.admin2, ...admin2 }
+        : null,
+      admin3: slotResults.admin3
+        ? { userId: slotResults.admin3, ...admin3 }
+        : null,
       createdAt: fullOrg.createdAt,
     };
 
-    console.log("📤 [createIssuer] response:", JSON.stringify(responseData, null, 2));
+    console.log(
+      "📤 [createIssuer] response:",
+      JSON.stringify(responseData, null, 2),
+    );
 
     // ── Step 4: Welcome emails (non-blocking) ─────────────────────
     sendWelcomeEmails({ issuer: responseData, adminEmail }).catch((err) =>
-      console.error("❌ [createIssuer] welcome email error:", err.message)
+      console.error("❌ [createIssuer] welcome email error:", err.message),
     );
 
     return sendSuccess(res, responseData, "Issuer created successfully", 201);
@@ -275,7 +323,10 @@ export async function updateIssuer(req, res) {
 
     const { id } = req.params;
     console.log("✏️ [updateIssuer] orgId:", id, "admin:", adminEmail);
-    console.log("📥 [updateIssuer] payload:", JSON.stringify(req.body, null, 2));
+    console.log(
+      "📥 [updateIssuer] payload:",
+      JSON.stringify(req.body, null, 2),
+    );
 
     const org = await Organization.findOne({ orgId: id, isDeleted: false });
     if (!org) return sendError(res, "Issuer not found", 404);
@@ -284,9 +335,17 @@ export async function updateIssuer(req, res) {
     console.log("🔒 [updateIssuer] hasEarners:", hasEarners);
 
     const {
-      orgName, orgEmail, website, supportEmail, postal,
-      reminderSettings, apiAuthKey,
-      primaryContact, admin1, admin2, admin3,
+      orgName,
+      orgEmail,
+      website,
+      supportEmail,
+      postal,
+      reminderSettings,
+      apiAuthKey,
+      primaryContact,
+      admin1,
+      admin2,
+      admin3,
     } = req.body;
 
     // ── Update org-level fields (locked if has earners) ──────────
@@ -320,19 +379,29 @@ export async function updateIssuer(req, res) {
 
     for (const { slot, data } of contactUpdates) {
       const userIds = org[slot];
-      const existingUserId = userIds.length > 0 ? userIds[userIds.length - 1] : null;
+      const existingUserId =
+        userIds.length > 0 ? userIds[userIds.length - 1] : null;
       const newEmail = data?.email?.trim().toLowerCase() || "";
 
       if (!newEmail) {
         if (removableSlots.has(slot) && existingUserId) {
-          console.log(`🗑️ [updateIssuer] clearing ${slot} user:`, existingUserId);
+          console.log(
+            `🗑️ [updateIssuer] clearing ${slot} user:`,
+            existingUserId,
+          );
 
           try {
             await callUserService("delete", `/internal/user/${existingUserId}`);
             slotsToUpdate.push({ slot, userIds: [] });
-            console.log(`✅ [updateIssuer] ${slot} cleared and user deactivated:`, existingUserId);
+            console.log(
+              `✅ [updateIssuer] ${slot} cleared and user deactivated:`,
+              existingUserId,
+            );
           } catch (err) {
-            console.warn(`⚠️ [updateIssuer] failed to clear ${slot}:`, err?.message || err);
+            console.warn(
+              `⚠️ [updateIssuer] failed to clear ${slot}:`,
+              err?.message || err,
+            );
           }
         }
         continue;
@@ -342,7 +411,10 @@ export async function updateIssuer(req, res) {
       let existingUser = null;
       if (existingUserId) {
         try {
-          const res = await callUserService("get", `/internal/user/${existingUserId}`);
+          const res = await callUserService(
+            "get",
+            `/internal/user/${existingUserId}`,
+          );
           existingUser = res?.data || null;
         } catch {}
       }
@@ -352,14 +424,21 @@ export async function updateIssuer(req, res) {
 
       if (emailChanged) {
         // Email changed — deactivate old user and create new one
-        console.log(`🔄 [updateIssuer] email changed for ${slot}: ${existingEmail} → ${newEmail}`);
+        console.log(
+          `🔄 [updateIssuer] email changed for ${slot}: ${existingEmail} → ${newEmail}`,
+        );
 
         try {
           // Step 1: Mark old user as inactive/deleted
           await callUserService("delete", `/internal/user/${existingUserId}`);
-          console.log(`✅ [updateIssuer] old user deactivated: ${existingUserId}`);
+          console.log(
+            `✅ [updateIssuer] old user deactivated: ${existingUserId}`,
+          );
         } catch (err) {
-          console.warn(`⚠️ [updateIssuer] failed to deactivate old user ${existingUserId}:`, err.message);
+          console.warn(
+            `⚠️ [updateIssuer] failed to deactivate old user ${existingUserId}:`,
+            err.message,
+          );
         }
 
         // Step 2: Create new user with new email
@@ -375,15 +454,25 @@ export async function updateIssuer(req, res) {
             createdBy: adminEmail,
           };
 
-          const result = await callUserService("post", "/internal/user", userPayload);
+          const result = await callUserService(
+            "post",
+            "/internal/user",
+            userPayload,
+          );
           const newUserId = result.data.userId;
 
           // Update org array with new userId (append, don't replace — keeps history)
           userIds.push(newUserId);
           slotsToUpdate.push({ slot, userIds });
-          console.log(`✅ [updateIssuer] new user created for ${slot}:`, newUserId);
+          console.log(
+            `✅ [updateIssuer] new user created for ${slot}:`,
+            newUserId,
+          );
         } catch (err) {
-          console.warn(`⚠️ [updateIssuer] user creation failed for ${slot}:`, err?.response?.data?.message || err.message);
+          console.warn(
+            `⚠️ [updateIssuer] user creation failed for ${slot}:`,
+            err?.response?.data?.message || err.message,
+          );
         }
       } else if (existingUserId) {
         // Email same or no change — just update user fields
@@ -394,17 +483,32 @@ export async function updateIssuer(req, res) {
           lastUpdatedBy: adminEmail,
         };
 
-        console.log(`📡 [updateIssuer] updating user ${existingUserId} for slot ${slot}`);
+        console.log(
+          `📡 [updateIssuer] updating user ${existingUserId} for slot ${slot}`,
+        );
 
         try {
-          await callUserService("put", `/internal/user/${existingUserId}`, updatePayload);
-          console.log(`✅ [updateIssuer] user updated for ${slot}:`, existingUserId);
+          await callUserService(
+            "put",
+            `/internal/user/${existingUserId}`,
+            updatePayload,
+          );
+          console.log(
+            `✅ [updateIssuer] user updated for ${slot}:`,
+            existingUserId,
+          );
         } catch (err) {
-          console.warn(`⚠️ [updateIssuer] user update failed for ${slot}:`, err.message);
+          console.warn(
+            `⚠️ [updateIssuer] user update failed for ${slot}:`,
+            err.message,
+          );
         }
       } else {
         // No user exists for this slot — create new user
-        console.log(`🆕 [updateIssuer] creating new user for ${slot}:`, newEmail);
+        console.log(
+          `🆕 [updateIssuer] creating new user for ${slot}:`,
+          newEmail,
+        );
 
         try {
           const userPayload = {
@@ -418,14 +522,21 @@ export async function updateIssuer(req, res) {
             createdBy: adminEmail,
           };
 
-          const result = await callUserService("post", "/internal/user", userPayload);
+          const result = await callUserService(
+            "post",
+            "/internal/user",
+            userPayload,
+          );
           const newUserId = result.data.userId;
 
           userIds.push(newUserId);
           slotsToUpdate.push({ slot, userIds });
           console.log(`✅ [updateIssuer] user created for ${slot}:`, newUserId);
         } catch (err) {
-          console.warn(`⚠️ [updateIssuer] user creation failed for ${slot}:`, err?.response?.data?.message || err.message);
+          console.warn(
+            `⚠️ [updateIssuer] user creation failed for ${slot}:`,
+            err?.response?.data?.message || err.message,
+          );
         }
       }
     }
@@ -437,7 +548,10 @@ export async function updateIssuer(req, res) {
         updateOps[slot] = userIds;
       }
       await Organization.updateOne({ orgId: id }, { $set: updateOps });
-      console.log("✅ [updateIssuer] org arrays updated for slots:", slotsToUpdate.map(s => s.slot));
+      console.log(
+        "✅ [updateIssuer] org arrays updated for slots:",
+        slotsToUpdate.map((s) => s.slot),
+      );
     }
 
     return sendSuccess(res, { orgId: id }, "Issuer updated successfully");
@@ -480,12 +594,19 @@ export async function deleteIssuer(req, res) {
         await callUserService("delete", `/internal/user/${userId}`);
         console.log("✅ [deleteIssuer] user deactivated:", userId);
       } catch (err) {
-        console.warn("⚠️ [deleteIssuer] could not deactivate user:", userId, err.message);
+        console.warn(
+          "⚠️ [deleteIssuer] could not deactivate user:",
+          userId,
+          err.message,
+        );
         // Non-fatal — continue deactivating others
       }
     }
 
-    console.log("📤 [deleteIssuer] complete — users deactivated:", allUserIds.length);
+    console.log(
+      "📤 [deleteIssuer] complete — users deactivated:",
+      allUserIds.length,
+    );
     return sendSuccess(res, { orgId: id }, "Issuer deleted successfully");
   } catch (err) {
     console.error("❌ [deleteIssuer] error:", err.message);
@@ -502,13 +623,16 @@ async function issuerHasEarners(orgId) {
     console.log("🔍 [issuerHasEarners] checking orgId:", orgId);
     const response = await axios.get(
       `${process.env.EARNER_SERVICE_BASE_URL}/internal/issuer/${orgId}/has-earners`,
-      { headers: { "x-internal-key": process.env.EARNER_EXISTANCE_KEY } }
+      { headers: { "x-internal-key": process.env.EARNER_EXISTANCE_KEY } },
     );
     const hasEarners = Boolean(response.data?.hasEarners);
     console.log("✅ [issuerHasEarners] result:", hasEarners);
     return hasEarners;
   } catch (err) {
-    console.error("❌ [issuerHasEarners] check failed — defaulting to locked:", err.message);
+    console.error(
+      "❌ [issuerHasEarners] check failed — defaulting to locked:",
+      err.message,
+    );
     return true; // fail closed
   }
 }
@@ -530,12 +654,13 @@ async function sendWelcomeEmails({ issuer, adminEmail }) {
       await axios.post(
         `${process.env.EMAIL_SERVICE_BASE_URL}/email/email-send`,
         {
-          from: adminEmail,
+          from: process.env.EMAIL_SENDER_SES,
           to: contact.email,
           subject: "Welcome to BadgeConnect 🎉",
           template: "welcome-issuer",
           variables: {
-            recipientName: `${contact.firstName || ""} ${contact.lastName || ""}`.trim(),
+            recipientName:
+              `${contact.firstName || ""} ${contact.lastName || ""}`.trim(),
             recipientRole: contact.role,
             orgName: issuer.orgName,
             orgEmail: issuer.orgEmail,
@@ -544,11 +669,20 @@ async function sendWelcomeEmails({ issuer, adminEmail }) {
             website: "https://badgeconnect.com/issuer",
           },
         },
-        { headers: { "x-internal-api-key": process.env.EMAIL_SERVICE_INTERNAL_KEY } }
+        {
+          headers: {
+            "x-internal-api-key": process.env.EMAIL_SERVICE_INTERNAL_KEY,
+          },
+        },
       );
-      console.log(`✅ [sendWelcomeEmails] sent to ${contact.role}: ${contact.email}`);
+      console.log(
+        `✅ [sendWelcomeEmails] sent to ${contact.role}: ${contact.email}`,
+      );
     } catch (err) {
-      console.error(`❌ [sendWelcomeEmails] failed for ${contact.role}:`, err.message);
+      console.error(
+        `❌ [sendWelcomeEmails] failed for ${contact.role}:`,
+        err.message,
+      );
     }
   }
 }
