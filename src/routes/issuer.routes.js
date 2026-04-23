@@ -8,6 +8,7 @@ import {
     getIssuerById,
     updateIssuer,
     deleteIssuer,
+    resendOrgEmailVerification,
 } from "../controllers/issuer.controller.js";
 
 import authMiddleware from "../middlewares/auth.middleware.js";
@@ -27,6 +28,9 @@ router.get("/:id", authMiddleware, getIssuerById);
 
 // Update issuer
 router.put("/:id", authMiddleware, updateIssuer);
+
+// Resend org email verification
+router.post("/:id/resend-org-email-verification", authMiddleware, resendOrgEmailVerification);
 
 // Soft delete issuer
 router.delete("/:id", authMiddleware, deleteIssuer);
