@@ -38,6 +38,11 @@ const organizationSchema = new mongoose.Schema(
     type:String,
     default:null
   },
+  onboardingType:{
+    type:String,
+    enum:["badgecert","non-badgecert"],
+    default:"badgecert"
+  },
   apiAuthKey:{
     type:String,
     default:"",
