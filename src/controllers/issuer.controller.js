@@ -275,6 +275,15 @@ export async function createIssuer(req, res) {
       JSON.stringify(responseData, null, 2),
     );
 
+    const verificationRequested = await triggerOrgEmailVerification({
+      orgId,
+      orgName: fullOrg.orgName,
+      orgEmail: fullOrg.orgEmail,
+      requestedBy: adminEmail,
+    });
+
+    responseData.orgEmailVerificationRequested = verificationRequested;
+
     // ── Step 4: Welcome emails (non-blocking) ─────────────────────
     sendWelcomeEmails({ issuer: responseData, adminEmail }).catch((err) =>
       console.error("❌ [createIssuer] welcome email error:", err.message),
@@ -382,9 +391,15 @@ export async function updateIssuer(req, res) {
     } = req.body;
 
     // ── Update org-level fields (locked if has earners) ──────────
+    const nextOrgEmail =
+      typeof orgEmail === "string" ? orgEmail.trim().toLowerCase() : "";
+    const orgEmailChanged = Boolean(
+      !hasEarners && nextOrgEmail && nextOrgEmail !== org.orgEmail,
+    );
+
     if (!hasEarners) {
       if (orgName) org.orgName = orgName;
-      if (orgEmail) org.orgEmail = orgEmail.trim().toLowerCase();
+      if (nextOrgEmail) org.orgEmail = nextOrgEmail;
       if (website) org.website = website;
       if (supportEmail) org.supportEmail = supportEmail;
       if (postal) org.postal = postal;
@@ -401,8 +416,15 @@ export async function updateIssuer(req, res) {
     await org.save();
     console.log("✅ [updateIssuer] org saved:", id);
 
-    await syncOrgToUserService(org, adminEmail.trim().toLowerCase());
-    console.log("✅ [updateIssuer] organization synced to badgeconnect_user:", id);
+    let verificationRequested = false;
+    if (orgEmailChanged) {
+      verificationRequested = await triggerOrgEmailVerification({
+        orgId: org.orgId,
+        orgName: org.orgName,
+        orgEmail: org.orgEmail,
+        requestedBy: adminEmail,
+      });
+    }
 
     // ── Update/Create user details via badgeconnect_user ─────────────
     const contactUpdates = [
@@ -592,10 +614,53 @@ export async function updateIssuer(req, res) {
       );
     }
 
-    return sendSuccess(res, { orgId: id }, "Issuer updated successfully");
+    return sendSuccess(
+      res,
+      { orgId: id, orgEmailVerificationRequested: verificationRequested },
+      "Issuer updated successfully",
+    );
   } catch (err) {
     console.error("❌ [updateIssuer] error:", err.message);
     return sendError(res, err.message || "Failed to update issuer", 500);
+  }
+}
+
+export async function resendOrgEmailVerification(req, res) {
+  try {
+    const adminEmail = req.admin?.email;
+    if (!adminEmail) return sendError(res, "Unauthorized admin", 401);
+
+    const { id } = req.params;
+    const org = await Organization.findOne({ orgId: id, isDeleted: false }).lean();
+
+    if (!org) return sendError(res, "Issuer not found", 404);
+
+    const triggered = await triggerOrgEmailVerification({
+      orgId: org.orgId,
+      orgName: org.orgName,
+      orgEmail: org.orgEmail,
+      requestedBy: adminEmail,
+    });
+
+    if (!triggered) {
+      return sendError(res, "Failed to trigger organization email verification", 500);
+    }
+
+    return sendSuccess(
+      res,
+      {
+        orgId: org.orgId,
+        orgEmail: org.orgEmail,
+      },
+      "Organization email verification sent",
+    );
+  } catch (err) {
+    console.error("❌ [resendOrgEmailVerification] error:", err.message);
+    return sendError(
+      res,
+      err.message || "Failed to trigger organization email verification",
+      500,
+    );
   }
 }
 
@@ -680,6 +745,43 @@ async function issuerHasEarners(orgId) {
       err.message,
     );
     return true; // fail closed
+  }
+}
+
+async function triggerOrgEmailVerification({
+  orgId,
+  orgName,
+  orgEmail,
+  requestedBy,
+}) {
+  try {
+    await axios.post(
+      `${process.env.EMAIL_SERVICE_BASE_URL}/email/org-email-verification`,
+      {
+        orgId,
+        orgName,
+        orgEmail,
+        requestedBy,
+      },
+      {
+        headers: {
+          "x-internal-api-key": process.env.EMAIL_SERVICE_INTERNAL_KEY,
+        },
+      },
+    );
+
+    console.log("✅ [triggerOrgEmailVerification] verification requested", {
+      orgId,
+      orgEmail,
+    });
+    return true;
+  } catch (err) {
+    console.error("❌ [triggerOrgEmailVerification] failed:", {
+      orgId,
+      orgEmail,
+      message: err?.response?.data?.message || err.message,
+    });
+    return false;
   }
 }
 
