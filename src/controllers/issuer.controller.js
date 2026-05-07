@@ -72,6 +72,26 @@ async function populateOrgUsers(org) {
   };
 }
 
+async function syncOrgToUserService(org, actorEmail = null) {
+  if (!org?.orgId || !org?.orgName || !org?.orgEmail) {
+    throw new Error("Cannot sync organization without orgId, orgName, and orgEmail");
+  }
+
+  await callUserService("put", `/internal/org/${org.orgId}`, {
+    orgName: org.orgName,
+    orgEmail: org.orgEmail,
+    website: org.website || null,
+    supportEmail: org.supportEmail || null,
+    postal: org.postal || null,
+    onboardingType: org.onboardingType || "badgecert",
+    apiAuthKey: typeof org.apiAuthKey === "string" ? org.apiAuthKey : undefined,
+    addedByAdmin: org.addedByAdmin,
+    lastUpdatedBy: actorEmail || org.lastUpdatedBy || null,
+    status: org.status,
+    isDeleted: org.isDeleted,
+  });
+}
+
 // ─────────────────────────────────────────────
 //  POST /issuer
 //  Creates org in local DB + users in badgeconnect_user
@@ -87,6 +107,7 @@ export async function createIssuer(req, res) {
       website,
       supportEmail,
       postal,
+      onboardingType,
       primaryContact,
       admin1,
       admin2,
@@ -115,6 +136,7 @@ export async function createIssuer(req, res) {
       website: website || null,
       supportEmail: supportEmail || null,
       postal: postal || null,
+      onboardingType: onboardingType || "badgecert",
       addedByAdmin: adminEmail.trim().toLowerCase(),
       ...(reminderSettings ? { reminderSettings } : {}),
       primaryContact: [],
@@ -125,6 +147,15 @@ export async function createIssuer(req, res) {
 
     const orgId = org.orgId;
     console.log("✅ [createIssuer] Organization created:", orgId);
+
+    try {
+      await syncOrgToUserService(org, adminEmail.trim().toLowerCase());
+      console.log("✅ [createIssuer] organization synced to badgeconnect_user:", orgId);
+    } catch (err) {
+      await Organization.deleteOne({ orgId });
+      console.error("❌ [createIssuer] org sync failed, rolling back local org:", err.message);
+      return sendError(res, "Failed to sync organization", 500);
+    }
 
     // ── Step 2: Create GlobalUsers in badgeconnect_user ──────────
     const commonPayload = {
@@ -221,6 +252,7 @@ export async function createIssuer(req, res) {
       website: fullOrg.website,
       supportEmail: fullOrg.supportEmail,
       postal: fullOrg.postal,
+      onboardingType: fullOrg.onboardingType || "badgecert",
       addedByAdmin: fullOrg.addedByAdmin,
       reminderSettings: fullOrg.reminderSettings,
       primaryContact: slotResults.primaryContact
@@ -349,6 +381,7 @@ export async function updateIssuer(req, res) {
       website,
       supportEmail,
       postal,
+      onboardingType,
       reminderSettings,
       apiAuthKey,
       primaryContact,
@@ -370,11 +403,13 @@ export async function updateIssuer(req, res) {
       if (website) org.website = website;
       if (supportEmail) org.supportEmail = supportEmail;
       if (postal) org.postal = postal;
+      if (onboardingType) org.onboardingType = onboardingType;
     } else {
       console.log("⚠️ [updateIssuer] org fields locked — earners exist");
     }
 
     if (reminderSettings) org.reminderSettings = reminderSettings;
+    if (onboardingType) org.onboardingType = onboardingType;
     if (typeof apiAuthKey === "string") org.apiAuthKey = apiAuthKey.trim();
     org.lastUpdatedBy = adminEmail.trim().toLowerCase();
 
@@ -653,8 +688,16 @@ export async function deleteIssuer(req, res) {
     // Soft delete org locally
     org.isDeleted = true;
     org.status = "inactive";
+    org.lastUpdatedBy = req.admin?.email?.trim().toLowerCase() || null;
     await org.save();
     console.log("✅ [deleteIssuer] org soft deleted:", id);
+
+    try {
+      await syncOrgToUserService(org, req.admin?.email?.trim().toLowerCase() || null);
+      console.log("✅ [deleteIssuer] org status synced to badgeconnect_user:", id);
+    } catch (err) {
+      console.warn("⚠️ [deleteIssuer] org sync failed:", err.message);
+    }
 
     // Soft delete all linked users in badgeconnect_user
     for (const userId of allUserIds) {
