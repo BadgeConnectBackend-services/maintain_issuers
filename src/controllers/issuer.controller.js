@@ -129,30 +129,61 @@ export async function createIssuer(req, res) {
       return sendError(res, "primaryContact email is required", 400);
     }
 
-    // ── Step 1: Create Organization locally ──────────────────────
-    const org = await Organization.create({
-      orgName,
-      orgEmail: orgEmail.trim().toLowerCase(),
-      website: website || null,
-      supportEmail: supportEmail || null,
-      postal: postal || null,
-      onboardingType: onboardingType || "badgecert",
-      addedByAdmin: adminEmail.trim().toLowerCase(),
-      ...(reminderSettings ? { reminderSettings } : {}),
-      primaryContact: [],
-      admin1: [],
-      admin2: [],
-      admin3: [],
-    });
+    // ── Step 1: Create or reactivate Organization locally ────────
+    const normalizedOrgEmail = orgEmail.trim().toLowerCase();
+    let isReactivated = false;
+
+    // Reuse a soft-deleted org that had the same orgEmail instead of hitting the unique-index error
+    const deletedOrg = await Organization.findOne({ orgEmail: normalizedOrgEmail, isDeleted: true });
+    let org;
+    if (deletedOrg) {
+      deletedOrg.orgName = orgName;
+      deletedOrg.website = website || null;
+      deletedOrg.supportEmail = supportEmail || null;
+      deletedOrg.postal = postal || null;
+      deletedOrg.onboardingType = onboardingType || "badgecert";
+      deletedOrg.addedByAdmin = adminEmail.trim().toLowerCase();
+      deletedOrg.lastUpdatedBy = adminEmail.trim().toLowerCase();
+      deletedOrg.isDeleted = false;
+      deletedOrg.status = "active";
+      deletedOrg.primaryContact = [];
+      deletedOrg.admin1 = [];
+      deletedOrg.admin2 = [];
+      deletedOrg.admin3 = [];
+      if (reminderSettings) deletedOrg.reminderSettings = reminderSettings;
+      await deletedOrg.save();
+      org = deletedOrg;
+      isReactivated = true;
+      console.log("♻️ [createIssuer] reactivated soft-deleted org:", org.orgId);
+    } else {
+      org = await Organization.create({
+        orgName,
+        orgEmail: normalizedOrgEmail,
+        website: website || null,
+        supportEmail: supportEmail || null,
+        postal: postal || null,
+        onboardingType: onboardingType || "badgecert",
+        addedByAdmin: adminEmail.trim().toLowerCase(),
+        ...(reminderSettings ? { reminderSettings } : {}),
+        primaryContact: [],
+        admin1: [],
+        admin2: [],
+        admin3: [],
+      });
+      console.log("✅ [createIssuer] Organization created:", org.orgId);
+    }
 
     const orgId = org.orgId;
-    console.log("✅ [createIssuer] Organization created:", orgId);
 
     try {
       await syncOrgToUserService(org, adminEmail.trim().toLowerCase());
       console.log("✅ [createIssuer] organization synced to badgeconnect_user:", orgId);
     } catch (err) {
-      await Organization.deleteOne({ orgId });
+      if (isReactivated) {
+        await Organization.updateOne({ orgId }, { $set: { isDeleted: true, status: "inactive" } });
+      } else {
+        await Organization.deleteOne({ orgId });
+      }
       console.error("❌ [createIssuer] org sync failed, rolling back local org:", err.message);
       return sendError(res, "Failed to sync organization", 500);
     }
@@ -218,8 +249,12 @@ export async function createIssuer(req, res) {
           }
         }
 
-        // Hard delete org — it has no users yet, clean removal
-        await Organization.deleteOne({ orgId });
+        // Roll back org — restore soft-deleted state if reactivated, else hard delete
+        if (isReactivated) {
+          await Organization.updateOne({ orgId }, { $set: { isDeleted: true, status: "inactive" } });
+        } else {
+          await Organization.deleteOne({ orgId });
+        }
         console.log("🔄 [createIssuer] rolled back org:", orgId);
 
         const message =
@@ -437,6 +472,19 @@ export async function updateIssuer(req, res) {
 
     const slotsToUpdate = []; // Track slots that need org array update
 
+    // Pre-fetch all current slot users once — lets us detect shared emails across slots
+    // (e.g. primaryContact and admin1 pointing to the same person)
+    const allSlotIds = [...new Set([
+      ...org.primaryContact, ...org.admin1, ...org.admin2, ...org.admin3,
+    ].filter(Boolean))];
+    const orgUsersByEmail = {};
+    await Promise.all(allSlotIds.map(async (uid) => {
+      try {
+        const r = await callUserService("get", `/internal/user/${uid}`);
+        if (r?.data?.email) orgUsersByEmail[r.data.email.trim().toLowerCase()] = uid;
+      } catch {}
+    }));
+
     for (const { slot, data } of contactUpdates) {
       const userIds = org[slot];
       const existingUserId =
@@ -501,45 +549,45 @@ export async function updateIssuer(req, res) {
           );
         }
 
-        // Step 2: Create new user with new email
-        try {
-          const userPayload = {
-            orgId: org.orgId,
-            orgName: org.orgName,
-            orgDept: data.orgDept || undefined,
-            firstName: data.firstName || undefined,
-            lastName: data.lastName || undefined,
-            email: newEmail,
-            userScope: "issuer",
-            createdBy: adminEmail,
-          };
-
-          const result = await callUserService(
-            "post",
-            "/internal/user",
-            userPayload,
-          );
-          const newUserId = result.data.userId;
-
-          // Update org array with new userId (append, don't replace — keeps history)
-          userIds.push(newUserId);
+        // Step 2: Link to existing org user if email matches another slot, else create new
+        const sharedUserId = orgUsersByEmail[newEmail];
+        if (sharedUserId) {
+          userIds.push(sharedUserId);
           slotsToUpdate.push({ slot, userIds });
-          console.log(
-            `✅ [updateIssuer] new user created for ${slot}:`,
-            newUserId,
-          );
-        } catch (err) {
-          console.warn(
-            `⚠️ [updateIssuer] user creation failed for ${slot}:`,
-            err?.response?.data?.message || err.message,
-          );
+          console.log(`✅ [updateIssuer] ${slot} linked to existing org user:`, sharedUserId);
+        } else {
+          try {
+            const userPayload = {
+              orgId: org.orgId,
+              orgName: org.orgName,
+              orgDept: data.orgDept || undefined,
+              firstName: data.firstName || undefined,
+              lastName: data.lastName || undefined,
+              email: newEmail,
+              userScope: "issuer",
+              createdBy: adminEmail,
+            };
+
+            const result = await callUserService("post", "/internal/user", userPayload);
+            const newUserId = result.data.userId;
+            orgUsersByEmail[newEmail] = newUserId;
+            userIds.push(newUserId);
+            slotsToUpdate.push({ slot, userIds });
+            console.log(`✅ [updateIssuer] new user created for ${slot}:`, newUserId);
+          } catch (err) {
+            console.warn(
+              `⚠️ [updateIssuer] user creation failed for ${slot}:`,
+              err?.response?.data?.message || err.message,
+            );
+          }
         }
-      } else if (existingUserId) {
+      } else if (existingUser) {
         // Email same or no change — just update user fields
         const updatePayload = {
           firstName: data.firstName || undefined,
           lastName: data.lastName || undefined,
           orgDept: data.orgDept || undefined,
+          phone: data.phone || undefined,
           lastUpdatedBy: adminEmail,
         };
 
@@ -564,39 +612,39 @@ export async function updateIssuer(req, res) {
           );
         }
       } else {
-        // No user exists for this slot — create new user
-        console.log(
-          `🆕 [updateIssuer] creating new user for ${slot}:`,
-          newEmail,
-        );
+        // No user exists for this slot — link to existing org user or create new
+        console.log(`🆕 [updateIssuer] creating/linking user for ${slot}:`, newEmail);
 
-        try {
-          const userPayload = {
-            orgId: org.orgId,
-            orgName: org.orgName,
-            orgDept: data.orgDept || undefined,
-            firstName: data.firstName || undefined,
-            lastName: data.lastName || undefined,
-            email: newEmail,
-            userScope: "issuer",
-            createdBy: adminEmail,
-          };
-
-          const result = await callUserService(
-            "post",
-            "/internal/user",
-            userPayload,
-          );
-          const newUserId = result.data.userId;
-
-          userIds.push(newUserId);
+        const sharedUserId = orgUsersByEmail[newEmail];
+        if (sharedUserId) {
+          userIds.push(sharedUserId);
           slotsToUpdate.push({ slot, userIds });
-          console.log(`✅ [updateIssuer] user created for ${slot}:`, newUserId);
-        } catch (err) {
-          console.warn(
-            `⚠️ [updateIssuer] user creation failed for ${slot}:`,
-            err?.response?.data?.message || err.message,
-          );
+          console.log(`✅ [updateIssuer] ${slot} linked to existing org user:`, sharedUserId);
+        } else {
+          try {
+            const userPayload = {
+              orgId: org.orgId,
+              orgName: org.orgName,
+              orgDept: data.orgDept || undefined,
+              firstName: data.firstName || undefined,
+              lastName: data.lastName || undefined,
+              email: newEmail,
+              userScope: "issuer",
+              createdBy: adminEmail,
+            };
+
+            const result = await callUserService("post", "/internal/user", userPayload);
+            const newUserId = result.data.userId;
+            orgUsersByEmail[newEmail] = newUserId;
+            userIds.push(newUserId);
+            slotsToUpdate.push({ slot, userIds });
+            console.log(`✅ [updateIssuer] user created for ${slot}:`, newUserId);
+          } catch (err) {
+            console.warn(
+              `⚠️ [updateIssuer] user creation failed for ${slot}:`,
+              err?.response?.data?.message || err.message,
+            );
+          }
         }
       }
     }
