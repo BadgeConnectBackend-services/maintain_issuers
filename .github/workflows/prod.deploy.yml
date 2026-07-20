@@ -43,7 +43,7 @@ jobs:
 
             IMAGE_TAG=${{ github.ref_name }}
 
-            cd ~/Badgeconnect
+            cd ~/badgeconnect
 
             docker pull cloudstry2026/maintain_issuers:$IMAGE_TAG
 
