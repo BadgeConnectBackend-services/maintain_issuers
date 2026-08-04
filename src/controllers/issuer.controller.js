@@ -53,7 +53,7 @@ async function populateOrgUsers(org) {
   const userMap = {};
   users.filter(Boolean).forEach((u) => {
     const isActiveIssuer =
-      u.status === "active" && !u.isDeleted && u.userScope === "issuer";
+      u.status === "active" && !u.isDeleted && u.userScope?.includes("issuer");
 
     if (isActiveIssuer) userMap[u.userId] = u;
     else
