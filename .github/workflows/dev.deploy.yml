@@ -39,7 +39,7 @@ jobs:
 
             IMAGE_TAG=${{ github.ref_name }}
 
-            cd ~/services
+            cd ~/badgeconnect
 
             docker pull rajsondhiya/maintain_issuers:$IMAGE_TAG
 
